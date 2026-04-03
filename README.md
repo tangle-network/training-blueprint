@@ -4,10 +4,10 @@
   </a>
 </p>
 
-<h1 align="center">Distributed Training Blueprint</h1>
+<h1 align="center">Training Blueprint</h1>
 
 <p align="center">
-  <a href="https://github.com/tangle-network/distributed-training-blueprint/actions"><img src="https://img.shields.io/github/actions/workflow/status/tangle-network/distributed-training-blueprint/ci.yml?branch=main&style=flat-square" alt="Build Status"></a>
+  <a href="https://github.com/tangle-network/training-blueprint/actions"><img src="https://img.shields.io/github/actions/workflow/status/tangle-network/training-blueprint/ci.yml?branch=main&style=flat-square" alt="Build Status"></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square" alt="License"></a>
   <a href="https://discord.gg/tangle"><img src="https://img.shields.io/discord/tangle?style=flat-square" alt="Discord"></a>
 </p>
@@ -104,7 +104,7 @@ export TRAIN_OP_GPU__TOTAL_VRAM_MIB=327680
 ## References
 
 - [DeMo / DisTrO](https://arxiv.org/abs/2411.19870) — Nous Research, 10,000x communication reduction
-- [OpenDiLoCo](https://arxiv.org/abs/2407.07852) — Prime Intellect distributed training
+- [OpenDiLoCo](https://arxiv.org/abs/2407.07852) — Prime Intellect training
 - [INTELLECT-2](https://arxiv.org/abs/2505.07291) — Async GRPO with TOPLOC verification
 
 ## License
