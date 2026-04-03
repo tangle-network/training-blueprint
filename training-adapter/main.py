@@ -303,9 +303,24 @@ class TrainingState:
         if not config.dataset_url:
             return None
         from datasets import load_dataset
-        if config.dataset_url.startswith("http"):
-            return load_dataset("json", data_files=config.dataset_url, split="train")
-        return load_dataset(config.dataset_url, split="train")
+        url = config.dataset_url
+
+        # S3/GCS/R2 — HuggingFace datasets handles these via fsspec
+        if url.startswith("s3://") or url.startswith("gs://") or url.startswith("r2://"):
+            # Requires: pip install s3fs gcsfs
+            # Auth via env: AWS_ACCESS_KEY_ID, GOOGLE_APPLICATION_CREDENTIALS, etc.
+            ext = url.rsplit(".", 1)[-1].lower()
+            fmt = {"jsonl": "json", "json": "json", "csv": "csv", "parquet": "parquet"}.get(ext, "json")
+            return load_dataset(fmt, data_files=url, split="train")
+
+        # HTTP/HTTPS URL
+        if url.startswith("http"):
+            ext = url.rsplit(".", 1)[-1].split("?")[0].lower()
+            fmt = {"jsonl": "json", "json": "json", "csv": "csv", "parquet": "parquet"}.get(ext, "json")
+            return load_dataset(fmt, data_files=url, split="train")
+
+        # HuggingFace Hub dataset name (e.g. "trl-lib/Capybara")
+        return load_dataset(url, split="train")
 
     def train_steps(self, num_steps: int, return_norms: bool = False) -> dict:
         import torch
