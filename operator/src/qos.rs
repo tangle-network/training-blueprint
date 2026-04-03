@@ -66,8 +66,8 @@ pub struct TrainingMetrics {
     pub gpu_utilization: u64,
     /// Number of connected training peers.
     pub peers_connected: u64,
-    /// Total GPU-hours contributed (scaled: hours * 1000).
-    pub contribution_gpu_hours_scaled: u64,
+    /// Total GPU-minutes contributed (scaled: hours * 1000).
+    pub contribution_gpu_minutes_scaled: u64,
 }
 
 /// Global training metrics (updated by coordinator).
@@ -88,7 +88,7 @@ pub fn update_metrics(
     loss: f32,
     gpu_util: u64,
     peers: u64,
-    gpu_hours: f64,
+    gpu_minutes: f64,
 ) {
     if let Ok(mut m) = training_metrics().write() {
         m.current_epoch = epoch;
@@ -96,7 +96,7 @@ pub fn update_metrics(
         m.loss_scaled = (loss * 10000.0) as u64;
         m.gpu_utilization = gpu_util;
         m.peers_connected = peers;
-        m.contribution_gpu_hours_scaled = (gpu_hours * 1000.0) as u64;
+        m.contribution_gpu_minutes_scaled = (gpu_minutes * 1000.0) as u64;
     }
 }
 
@@ -112,8 +112,8 @@ fn on_chain_metrics() -> Vec<(String, u64)> {
         ("gpu_utilization".to_string(), metrics.gpu_utilization),
         ("peers_connected".to_string(), metrics.peers_connected),
         (
-            "contribution_gpu_hours".to_string(),
-            metrics.contribution_gpu_hours_scaled,
+            "contribution_gpu_minutes".to_string(),
+            metrics.contribution_gpu_minutes_scaled,
         ),
     ]
 }

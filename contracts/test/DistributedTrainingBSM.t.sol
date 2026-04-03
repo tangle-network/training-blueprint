@@ -84,8 +84,8 @@ contract DistributedTrainingBSMTest is Test {
         bsm.joinTraining(jobId);
 
         bsm.updateContribution(jobId, operatorA, 10, 100);
-        (uint64 gpuHours, uint64 steps,,,) = bsm.contributions(jobId, operatorA);
-        assertEq(gpuHours, 10);
+        (uint64 gpuMinutes, uint64 steps,,,) = bsm.contributions(jobId, operatorA);
+        assertEq(gpuMinutes, 10);
         assertEq(steps, 100);
     }
 

@@ -24,7 +24,7 @@ contract DistributedTrainingBSM {
     }
 
     struct OperatorContribution {
-        uint64 gpuHoursContributed;
+        uint64 gpuMinutesContributed;
         uint64 stepsCompleted;
         uint32 joinedAtEpoch;
         uint32 leftAtEpoch;
@@ -197,31 +197,31 @@ contract DistributedTrainingBSM {
         }
     }
 
-    /// @notice Distribute payment proportionally by GPU-hours after job completion.
+    /// @notice Distribute payment proportionally by GPU-minutes after job completion.
     function distributePayment(uint64 jobId) external {
         TrainingJob storage job = jobs[jobId];
         require(job.completed, "not completed");
         require(job.totalPayment > 0, "no payment");
 
-        uint64 totalGpuHours = 0;
+        uint64 totalGpuMinutes = 0;
         uint256 operatorCount = job.operators.length;
 
         for (uint256 i = 0; i < operatorCount; i++) {
             address op = job.operators[i];
             if (!contributions[jobId][op].slashed) {
-                totalGpuHours += contributions[jobId][op].gpuHoursContributed;
+                totalGpuMinutes += contributions[jobId][op].gpuMinutesContributed;
             }
         }
 
-        require(totalGpuHours > 0, "no contributions");
+        require(totalGpuMinutes > 0, "no contributions");
 
         uint256 remaining = job.totalPayment;
         job.totalPayment = 0;
 
         for (uint256 i = 0; i < operatorCount; i++) {
             address op = job.operators[i];
-            if (!contributions[jobId][op].slashed && contributions[jobId][op].gpuHoursContributed > 0) {
-                uint256 share = (remaining * contributions[jobId][op].gpuHoursContributed) / totalGpuHours;
+            if (!contributions[jobId][op].slashed && contributions[jobId][op].gpuMinutesContributed > 0) {
+                uint256 share = (remaining * contributions[jobId][op].gpuMinutesContributed) / totalGpuMinutes;
                 payable(op).transfer(share);
                 emit PaymentDistributed(jobId, op, share);
             }
@@ -257,10 +257,10 @@ contract DistributedTrainingBSM {
     function updateContribution(
         uint64 jobId,
         address operator,
-        uint64 gpuHours,
+        uint64 gpuMinutes,
         uint64 steps
     ) external onlyFromTangle {
-        contributions[jobId][operator].gpuHoursContributed = gpuHours;
+        contributions[jobId][operator].gpuMinutesContributed = gpuMinutes;
         contributions[jobId][operator].stepsCompleted = steps;
     }
 
