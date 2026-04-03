@@ -3774,6 +3774,7 @@ dependencies = [
  "alloy-sol-types",
  "anyhow",
  "axum 0.7.9",
+ "blueprint-crypto",
  "blueprint-networking",
  "blueprint-sdk",
  "config",
