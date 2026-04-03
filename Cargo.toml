@@ -1,0 +1,28 @@
+[workspace]
+members = ["operator"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/tangle-network/distributed-training-blueprint"
+
+[workspace.dependencies]
+blueprint-sdk = { git = "https://github.com/tangle-network/blueprint", branch = "main", features = ["std", "tangle", "macros"] }
+blueprint-networking = { git = "https://github.com/tangle-network/blueprint", branch = "main" }
+alloy = { version = "1", features = ["full", "signer-local", "provider-http"] }
+alloy-sol-types = "1"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+reqwest = { version = "0.12", features = ["json"] }
+anyhow = "1"
+thiserror = "2"
+hex = "0.4"
+k256 = { version = "0.13", features = ["ecdsa"] }
+ndarray = "0.16"
+sha2 = "0.10"
+prometheus = "0.13"

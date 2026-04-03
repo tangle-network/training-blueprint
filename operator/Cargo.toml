@@ -1,0 +1,47 @@
+[package]
+name = "distributed-training"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "distributed_training"
+path = "src/lib.rs"
+
+[[bin]]
+name = "training-operator"
+path = "src/main.rs"
+
+[dependencies]
+blueprint-sdk = { workspace = true, features = ["tee"] }
+blueprint-networking = { workspace = true }
+alloy = { workspace = true }
+alloy-sol-types = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+reqwest = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+k256 = { workspace = true }
+ndarray = { workspace = true }
+sha2 = { workspace = true }
+prometheus = { workspace = true }
+
+# Web framework
+axum = { version = "0.7", features = ["json", "macros"] }
+tower-http = { version = "0.5", features = ["cors", "limit", "trace", "timeout"] }
+
+# Config
+config = "0.14"
+dotenvy = "0.15"
+
+# Misc
+uuid = { version = "1", features = ["v4"] }
+rand = "0.8"
+
+[dev-dependencies]
+blueprint-sdk = { git = "https://github.com/tangle-network/blueprint", branch = "main", features = ["testing", "tangle"] }
