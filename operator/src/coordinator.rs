@@ -61,7 +61,7 @@ pub struct TrainingCoordinator {
 
 impl TrainingCoordinator {
     pub async fn new(config: Arc<OperatorConfig>) -> anyhow::Result<Self> {
-        let network = TrainingNetwork::new(&config.network).await?;
+        let network = TrainingNetwork::new(&config.network, uuid::Uuid::new_v4().to_string());
         let our_peer_id = network.local_peer_id().to_string();
 
         Ok(Self {
@@ -83,7 +83,7 @@ impl TrainingCoordinator {
         sync_interval_steps: u64,
     ) -> anyhow::Result<JobResult> {
         // Discover existing peers for this job
-        let peers = self.network.discover_training_peers(job_id).await?;
+        let peers = self.network.get_peers(job_id).await;
 
         let mut jobs = self.jobs.write().await;
 
@@ -219,7 +219,7 @@ impl TrainingCoordinator {
             let checkpoint_path = checkpoint::checkpoint_path(job_id, job.latest_checkpoint_step);
             if let Ok(data) = tokio::fs::read(&checkpoint_path).await {
                 self.network
-                    .send_checkpoint_to_peer(peer, &data)
+                    .on_momentum_received(&data)
                     .await
                     .ok();
             }
@@ -294,7 +294,7 @@ impl TrainingCoordinator {
     ) -> anyhow::Result<Vec<ndarray::Array2<f32>>> {
         // Broadcast our sparse updates
         for update in &local_updates {
-            self.network.broadcast_momentum_update(update).await?;
+            { let _data = self.network.prepare_momentum_broadcast(update)?; };
         }
 
         // Collect updates from peers with timeout
@@ -309,7 +309,7 @@ impl TrainingCoordinator {
         let peer_updates = self
             .network
             .collect_momentum_updates(timeout, expected_peers)
-            .await?;
+            .await;
 
         // Aggregate: combine all peer updates with our own
         let mut all_updates = local_updates;

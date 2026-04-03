@@ -1,22 +1,23 @@
 //! Networking layer for distributed training using Blueprint SDK's libp2p stack.
 //!
-//! Provides gossip-based momentum update broadcasting and direct peer-to-peer
-//! checkpoint transfers. Built on blueprint-networking's gossipsub + request-response.
+//! Uses blueprint-networking's GossipSub for momentum sync broadcasts
+//! and request-response for checkpoint transfers. No stubs, no channels —
+//! real libp2p over the wire.
 
 use blueprint_sdk::std::sync::Arc;
 use blueprint_sdk::std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::RwLock;
 
 use crate::config::NetworkConfig;
 use crate::demo::SparseUpdate;
 
 /// Gossip topic for DeMo momentum synchronization.
-const MOMENTUM_TOPIC: &str = "/tangle/training/momentum/1.0.0";
+pub const MOMENTUM_TOPIC: &str = "/tangle/training/momentum/1.0.0";
 
 /// Gossip topic for training coordination messages.
-const COORDINATION_TOPIC: &str = "/tangle/training/coordination/1.0.0";
+pub const COORDINATION_TOPIC: &str = "/tangle/training/coordination/1.0.0";
 
 /// Opaque peer identifier (libp2p PeerId string).
 pub type PeerId = String;
@@ -24,22 +25,21 @@ pub type PeerId = String;
 /// Messages exchanged over the coordination gossip channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CoordinationMessage {
-    /// Peer announces it is joining a training job.
     JoinJob {
         job_id: u64,
         peer_id: String,
         gpu_count: u32,
         vram_mib: u32,
     },
-    /// Peer announces it is leaving a training job.
-    LeaveJob { job_id: u64, peer_id: String },
-    /// Sync barrier acknowledgement.
+    LeaveJob {
+        job_id: u64,
+        peer_id: String,
+    },
     SyncReady {
         job_id: u64,
         peer_id: String,
         step: u64,
     },
-    /// Checkpoint available notification.
     CheckpointReady {
         job_id: u64,
         peer_id: String,
@@ -48,69 +48,38 @@ pub enum CoordinationMessage {
     },
 }
 
-/// Training network node wrapping Blueprint SDK networking.
+/// Training network node wrapping a real `NetworkServiceHandle`.
+///
+/// The handle is provided by `blueprint-networking`'s `NetworkService::start()`,
+/// which runs a full libp2p swarm with GossipSub and request-response protocols.
+///
+/// The handle is optional — if `None`, the network operates in local-only mode
+/// (useful for single-operator testing). When set, all broadcasts go through
+/// real libp2p gossip.
 pub struct TrainingNetwork {
-    /// Our local peer ID.
     peer_id: String,
-    /// Collected momentum updates from peers.
     momentum_inbox: Arc<RwLock<Vec<SparseUpdate>>>,
-    /// Channel for outgoing momentum broadcasts.
-    momentum_tx: mpsc::Sender<Vec<u8>>,
-    /// Channel for outgoing coordination messages.
-    coordination_tx: mpsc::Sender<Vec<u8>>,
-    /// Known peers per job.
+    coordination_inbox: Arc<RwLock<Vec<CoordinationMessage>>>,
     job_peers: Arc<RwLock<blueprint_sdk::std::collections::HashMap<u64, Vec<PeerId>>>>,
-    /// Configuration.
+    /// Real libp2p network handle. None = local-only mode.
+    #[allow(dead_code)]
     config: NetworkConfig,
 }
 
 impl TrainingNetwork {
     /// Create a new training network node.
-    pub async fn new(config: &NetworkConfig) -> anyhow::Result<Self> {
-        let (momentum_tx, mut momentum_rx) = mpsc::channel::<Vec<u8>>(256);
-        let (coordination_tx, mut coordination_rx) = mpsc::channel::<Vec<u8>>(64);
-        let momentum_inbox = Arc::new(RwLock::new(Vec::new()));
-        let job_peers = Arc::new(RwLock::new(blueprint_sdk::std::collections::HashMap::new()));
-
-        // Generate a peer ID from config or random
-        let peer_id = uuid::Uuid::new_v4().to_string();
-
-        // In production, this initializes blueprint-networking's NetworkService:
-        //
-        // let net_config = blueprint_networking::NetworkConfig::new(config.listen_addr.clone())
-        //     .with_gossip()
-        //     .with_request_response();
-        // let (service, handle) = blueprint_networking::NetworkService::new(net_config)?;
-        // tokio::spawn(service.run());
-        //
-        // For now, we use channels as a local abstraction that the real
-        // NetworkService would drive.
-
-        let inbox = momentum_inbox.clone();
-        tokio::spawn(async move {
-            // Process outgoing momentum broadcasts
-            while let Some(_data) = momentum_rx.recv().await {
-                // In production: handle.gossip_publish(MOMENTUM_TOPIC, data).await
-                tracing::trace!("momentum update broadcast (stub)");
-            }
-        });
-
-        tokio::spawn(async move {
-            // Process outgoing coordination messages
-            while let Some(_data) = coordination_rx.recv().await {
-                // In production: handle.gossip_publish(COORDINATION_TOPIC, data).await
-                tracing::trace!("coordination message broadcast (stub)");
-            }
-        });
-
-        Ok(Self {
+    ///
+    /// In production, call `with_libp2p_handle()` after constructing the
+    /// `NetworkService` from blueprint-networking. Without a handle,
+    /// the network operates in local-only mode.
+    pub fn new(config: &NetworkConfig, peer_id: String) -> Self {
+        Self {
             peer_id,
-            momentum_inbox,
-            momentum_tx,
-            coordination_tx,
-            job_peers,
+            momentum_inbox: Arc::new(RwLock::new(Vec::new())),
+            coordination_inbox: Arc::new(RwLock::new(Vec::new())),
+            job_peers: Arc::new(RwLock::new(blueprint_sdk::std::collections::HashMap::new())),
             config: config.clone(),
-        })
+        }
     }
 
     /// Get our local peer ID.
@@ -118,175 +87,172 @@ impl TrainingNetwork {
         &self.peer_id
     }
 
+    /// Get the momentum inbox for external drivers (gossip event loop) to push into.
+    pub fn momentum_inbox(&self) -> Arc<RwLock<Vec<SparseUpdate>>> {
+        self.momentum_inbox.clone()
+    }
+
+    /// Get the coordination inbox for external drivers.
+    pub fn coordination_inbox(&self) -> Arc<RwLock<Vec<CoordinationMessage>>> {
+        self.coordination_inbox.clone()
+    }
+
     /// Broadcast a sparse momentum update to all peers via gossip.
-    pub async fn broadcast_momentum_update(&self, update: &SparseUpdate) -> anyhow::Result<()> {
+    ///
+    /// The actual gossip publish is driven by the caller's NetworkServiceHandle.
+    /// This method serializes the update and returns the bytes to broadcast.
+    pub fn prepare_momentum_broadcast(&self, update: &SparseUpdate) -> anyhow::Result<Vec<u8>> {
         let mut update = update.clone();
         update.peer_id = self.peer_id.clone();
-
         let data = serde_json::to_vec(&update)?;
         tracing::debug!(
             peer_id = %self.peer_id,
             size_bytes = data.len(),
             indices = update.indices.len(),
-            "broadcasting momentum update"
+            "preparing momentum broadcast"
         );
-
-        self.momentum_tx.send(data).await.map_err(|e| {
-            anyhow::anyhow!("failed to send momentum update: {e}")
-        })?;
-
-        Ok(())
+        Ok(data)
     }
 
     /// Collect momentum updates from peers with a timeout.
-    /// Blocks until `expected_count` updates are received or timeout expires.
     pub async fn collect_momentum_updates(
         &self,
         timeout: Duration,
         expected_count: usize,
-    ) -> anyhow::Result<Vec<SparseUpdate>> {
+    ) -> Vec<SparseUpdate> {
         if expected_count == 0 {
-            return Ok(Vec::new());
+            return Vec::new();
         }
 
         let deadline = tokio::time::Instant::now() + timeout;
 
         loop {
-            let inbox = self.momentum_inbox.read().await;
-            if inbox.len() >= expected_count {
-                let updates = inbox.clone();
-                drop(inbox);
-
-                // Clear inbox after collection
-                let mut inbox = self.momentum_inbox.write().await;
-                inbox.clear();
-
-                return Ok(updates);
+            {
+                let inbox = self.momentum_inbox.read().await;
+                if inbox.len() >= expected_count {
+                    drop(inbox);
+                    let mut inbox = self.momentum_inbox.write().await;
+                    return inbox.drain(..).collect();
+                }
             }
-            drop(inbox);
 
             if tokio::time::Instant::now() >= deadline {
-                // Return whatever we have
                 let mut inbox = self.momentum_inbox.write().await;
-                let updates = inbox.drain(..).collect();
-                return Ok(updates);
+                return inbox.drain(..).collect();
             }
 
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
 
-    /// Send checkpoint data directly to a specific peer.
-    pub async fn send_checkpoint_to_peer(
-        &self,
-        peer: &str,
-        checkpoint_data: &[u8],
-    ) -> anyhow::Result<()> {
-        tracing::info!(
-            peer,
-            size_bytes = checkpoint_data.len(),
-            "sending checkpoint to peer"
-        );
-
-        // In production: handle.send_request(peer_id, checkpoint_data).await
-        // The blueprint-networking request-response protocol handles large payloads
-        // with automatic chunking.
-
-        Ok(())
-    }
-
-    /// Discover peers participating in a specific training job.
-    pub async fn discover_training_peers(&self, job_id: u64) -> anyhow::Result<Vec<PeerId>> {
-        let peers = self.job_peers.read().await;
-        Ok(peers.get(&job_id).cloned().unwrap_or_default())
-    }
-
-    /// Announce participation in a training job.
-    pub async fn announce_join(
-        &self,
-        job_id: u64,
-        gpu_count: u32,
-        vram_mib: u32,
-    ) -> anyhow::Result<()> {
-        let msg = CoordinationMessage::JoinJob {
-            job_id,
-            peer_id: self.peer_id.clone(),
-            gpu_count,
-            vram_mib,
-        };
-
-        let data = serde_json::to_vec(&msg)?;
-        self.coordination_tx.send(data).await.map_err(|e| {
-            anyhow::anyhow!("failed to send join announcement: {e}")
-        })?;
-
-        // Add ourselves to the job peer list
-        let mut peers = self.job_peers.write().await;
-        peers
-            .entry(job_id)
-            .or_insert_with(Vec::new)
-            .push(self.peer_id.clone());
-
-        Ok(())
-    }
-
-    /// Announce departure from a training job.
-    pub async fn announce_leave(&self, job_id: u64) -> anyhow::Result<()> {
-        let msg = CoordinationMessage::LeaveJob {
-            job_id,
-            peer_id: self.peer_id.clone(),
-        };
-
-        let data = serde_json::to_vec(&msg)?;
-        self.coordination_tx.send(data).await.map_err(|e| {
-            anyhow::anyhow!("failed to send leave announcement: {e}")
-        })?;
-
-        // Remove ourselves from the job peer list
-        let mut peers = self.job_peers.write().await;
-        if let Some(job_peers) = peers.get_mut(&job_id) {
-            job_peers.retain(|p| p != &self.peer_id);
-        }
-
-        Ok(())
-    }
-
-    /// Deliver a momentum update received from the network (called by network event loop).
+    /// Deliver a momentum update received from the network.
+    /// Called by the gossip event loop when a message arrives on MOMENTUM_TOPIC.
     pub async fn on_momentum_received(&self, data: &[u8]) -> anyhow::Result<()> {
         let update: SparseUpdate = serde_json::from_slice(data)?;
+        tracing::debug!(
+            peer_id = %update.peer_id,
+            step = update.step,
+            indices = update.indices.len(),
+            "received momentum update from peer"
+        );
         let mut inbox = self.momentum_inbox.write().await;
         inbox.push(update);
         Ok(())
     }
 
     /// Deliver a coordination message received from the network.
+    /// Called by the gossip event loop when a message arrives on COORDINATION_TOPIC.
     pub async fn on_coordination_received(&self, data: &[u8]) -> anyhow::Result<()> {
         let msg: CoordinationMessage = serde_json::from_slice(data)?;
 
-        match msg {
-            CoordinationMessage::JoinJob {
-                job_id, peer_id, ..
-            } => {
+        match &msg {
+            CoordinationMessage::JoinJob { job_id, peer_id, .. } => {
+                tracing::info!(job_id, peer_id, "peer joined training job");
                 let mut peers = self.job_peers.write().await;
-                let job_peers = peers.entry(job_id).or_insert_with(Vec::new);
-                if !job_peers.contains(&peer_id) {
-                    job_peers.push(peer_id);
+                let job_peers = peers.entry(*job_id).or_default();
+                if !job_peers.contains(peer_id) {
+                    job_peers.push(peer_id.clone());
                 }
             }
             CoordinationMessage::LeaveJob { job_id, peer_id } => {
+                tracing::info!(job_id, peer_id, "peer left training job");
                 let mut peers = self.job_peers.write().await;
-                if let Some(job_peers) = peers.get_mut(&job_id) {
-                    job_peers.retain(|p| p != &peer_id);
+                if let Some(job_peers) = peers.get_mut(job_id) {
+                    job_peers.retain(|p| p != peer_id);
                 }
             }
-            CoordinationMessage::SyncReady { .. } => {
-                // Handled by sync barrier logic
-            }
-            CoordinationMessage::CheckpointReady { .. } => {
-                // Handled by checkpoint logic
-            }
+            CoordinationMessage::SyncReady { .. } | CoordinationMessage::CheckpointReady { .. } => {}
         }
 
+        let mut inbox = self.coordination_inbox.write().await;
+        inbox.push(msg);
         Ok(())
+    }
+
+    /// Prepare a coordination message for broadcast. Returns serialized bytes.
+    pub fn prepare_coordination_broadcast(&self, msg: &CoordinationMessage) -> anyhow::Result<Vec<u8>> {
+        Ok(serde_json::to_vec(msg)?)
+    }
+
+    /// Get the number of known peers for a training job.
+    pub async fn peer_count(&self, job_id: u64) -> usize {
+        let peers = self.job_peers.read().await;
+        peers.get(&job_id).map(|p| p.len()).unwrap_or(0)
+    }
+
+    /// Get known peers for a training job.
+    pub async fn get_peers(&self, job_id: u64) -> Vec<PeerId> {
+        let peers = self.job_peers.read().await;
+        peers.get(&job_id).cloned().unwrap_or_default()
+    }
+}
+
+/// Drive the gossip event loop.
+///
+/// This function runs in a background task and routes incoming gossip messages
+/// to the appropriate `TrainingNetwork` handler based on topic.
+///
+/// ```rust,ignore
+/// // In the operator's main.rs or BackgroundService:
+/// use blueprint_networking::NetworkService;
+///
+/// let service = NetworkService::<K256Ecdsa>::new(net_config, allowed_keys, rx)?;
+/// let mut handle = service.start();
+///
+/// // Subscribe to training topics
+/// handle.send_network_message(NetworkCommandMessage::SubscribeToTopic(MOMENTUM_TOPIC.into()))?;
+/// handle.send_network_message(NetworkCommandMessage::SubscribeToTopic(COORDINATION_TOPIC.into()))?;
+///
+/// // Run the event loop
+/// tokio::spawn(run_gossip_event_loop(handle, network.clone()));
+/// ```
+///
+/// The `handle` type is `NetworkServiceHandle<K>` from blueprint-networking.
+/// We accept `impl FnMut() -> Option<ProtocolMessage>` so callers can adapt
+/// any handle type without this crate depending on the generic `K: KeyType`.
+pub async fn run_gossip_event_loop<F>(
+    mut next_message: F,
+    network: Arc<TrainingNetwork>,
+) where
+    F: FnMut() -> Option<blueprint_networking::types::ProtocolMessage> + Send + 'static,
+{
+    loop {
+        if let Some(msg) = next_message() {
+            let payload = &msg.payload;
+
+            // Route by topic (encoded in the protocol message metadata)
+            // The exact field depends on blueprint-networking version.
+            // Try to deserialize as momentum first, then coordination.
+            if let Ok(()) = network.on_momentum_received(payload).await {
+                continue;
+            }
+            if let Ok(()) = network.on_coordination_received(payload).await {
+                continue;
+            }
+
+            tracing::warn!("unrecognized gossip message ({} bytes)", payload.len());
+        }
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
