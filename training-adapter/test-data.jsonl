@@ -1,0 +1,10 @@
+{"messages": [{"role": "user", "content": "What is the capital of France?"}, {"role": "assistant", "content": "The capital of France is Paris."}]}
+{"messages": [{"role": "user", "content": "What is 2+2?"}, {"role": "assistant", "content": "2+2 equals 4."}]}
+{"messages": [{"role": "user", "content": "Who wrote Romeo and Juliet?"}, {"role": "assistant", "content": "William Shakespeare wrote Romeo and Juliet."}]}
+{"messages": [{"role": "user", "content": "What color is the sky?"}, {"role": "assistant", "content": "The sky is blue during a clear day."}]}
+{"messages": [{"role": "user", "content": "How many continents are there?"}, {"role": "assistant", "content": "There are 7 continents on Earth."}]}
+{"messages": [{"role": "user", "content": "What is the speed of light?"}, {"role": "assistant", "content": "The speed of light is approximately 299,792,458 meters per second."}]}
+{"messages": [{"role": "user", "content": "Name a programming language."}, {"role": "assistant", "content": "Python is a popular programming language."}]}
+{"messages": [{"role": "user", "content": "What is the largest ocean?"}, {"role": "assistant", "content": "The Pacific Ocean is the largest ocean on Earth."}]}
+{"messages": [{"role": "user", "content": "Who painted the Mona Lisa?"}, {"role": "assistant", "content": "Leonardo da Vinci painted the Mona Lisa."}]}
+{"messages": [{"role": "user", "content": "What is DNA?"}, {"role": "assistant", "content": "DNA is deoxyribonucleic acid, the molecule that carries genetic information."}]}
