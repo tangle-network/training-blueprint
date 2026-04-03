@@ -7,8 +7,13 @@ use blueprint_sdk::runner::tangle::config::TangleConfig;
 use blueprint_sdk::runner::BlueprintRunner;
 use blueprint_sdk::tangle::{TangleConsumer, TangleProducer};
 
+use blueprint_crypto::KeyType;
+use blueprint_crypto::k256::K256Ecdsa;
+use blueprint_networking::service::{AllowedKeys, NetworkCommandMessage, NetworkConfig as NetConfig};
+
 use distributed_training::config::OperatorConfig;
 use distributed_training::health;
+use distributed_training::network::{self, TrainingNetwork, MOMENTUM_TOPIC, COORDINATION_TOPIC};
 use distributed_training::TrainingServer;
 
 fn setup_log() {
@@ -17,8 +22,6 @@ fn setup_log() {
     fmt().with_env_filter(filter).init();
 }
 
-/// Build ABI-encoded registration payload for DistributedTrainingBSM.onRegister.
-/// Format: abi.encode(uint32 gpuCount, uint32 totalVramMib, uint64 networkBandwidthMbps, string gpuModel, string endpoint)
 fn registration_payload(config: &OperatorConfig) -> Vec<u8> {
     let gpu_count = config.gpu.gpu_count;
     let total_vram = config.gpu.total_vram_mib;
@@ -77,6 +80,68 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
         }
     }
 
+    // --- Start real libp2p networking ---
+    let listen_addr = config.network.listen_addr.clone();
+    let bootstrap_peers = config.network.bootstrap_peers.clone();
+
+    let instance_key_pair = K256Ecdsa::generate_with_seed(None)
+        .map_err(|e| blueprint_sdk::Error::Other(format!("key generation failed: {e}")))?;
+    let local_key = libp2p::identity::Keypair::generate_ed25519();
+
+    let net_config = NetConfig::<K256Ecdsa> {
+        network_name: "distributed-training".to_string(),
+        instance_id: "1.0.0".to_string(),
+        instance_key_pair,
+        local_key: local_key.clone(),
+        listen_addr: listen_addr.parse().unwrap_or_else(|_| "/ip4/0.0.0.0/tcp/0".parse().unwrap()),
+        target_peer_count: 10,
+        bootstrap_peers: bootstrap_peers
+            .iter()
+            .filter_map(|p| p.parse().ok())
+            .collect(),
+        enable_mdns: true,
+        enable_kademlia: true,
+        using_evm_address_for_handshake_verification: false,
+    };
+
+    let (_allowed_keys_tx, allowed_keys_rx) = crossbeam_channel::unbounded();
+    let net_service = blueprint_networking::service::NetworkService::new(
+        net_config,
+        AllowedKeys::default(), // empty set — will be updated as peers register
+        allowed_keys_rx,
+    ).map_err(|e| blueprint_sdk::Error::Other(format!("networking init failed: {e}")))?;
+
+    let peer_id = net_service.get_listen_addr()
+        .map(|a| a.to_string())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+    let mut handle = net_service.start();
+
+    // Subscribe to training gossip topics
+    let _ = handle.send_network_message(NetworkCommandMessage::SubscribeToTopic(
+        MOMENTUM_TOPIC.to_string(),
+    ));
+    let _ = handle.send_network_message(NetworkCommandMessage::SubscribeToTopic(
+        COORDINATION_TOPIC.to_string(),
+    ));
+
+    tracing::info!(peer_id = %peer_id, "libp2p networking started");
+
+    // Create training network with real peer ID
+    let training_network = Arc::new(TrainingNetwork::new(&config.network, peer_id));
+
+    // Spawn gossip event loop — routes incoming messages to TrainingNetwork
+    let net_clone = training_network.clone();
+    tokio::spawn(async move {
+        network::run_gossip_event_loop(
+            move || handle.next_protocol_message(),
+            net_clone,
+        ).await;
+    });
+
+    tracing::info!("gossip event loop started on topics: {}, {}", MOMENTUM_TOPIC, COORDINATION_TOPIC);
+
+    // --- Tangle protocol setup ---
     let tangle_client = env
         .tangle_client()
         .await
@@ -108,8 +173,6 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
                 tracing::warn!(error = %e, "QoS heartbeat failed to start");
             }
         }
-    } else {
-        tracing::info!("QoS heartbeat disabled");
     }
 
     let training_server = TrainingServer {

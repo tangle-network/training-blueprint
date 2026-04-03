@@ -41,6 +41,9 @@ dotenvy = "0.15"
 
 # Misc
 uuid = { version = "1", features = ["v4"] }
+blueprint-crypto = { workspace = true }
+libp2p = { version = "0.54", features = ["identify"] }
+crossbeam-channel = "0.5"
 rand = "0.8"
 
 [dev-dependencies]

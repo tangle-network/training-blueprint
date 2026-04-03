@@ -1,0 +1,25 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["dependencies"]
+solc = "0.8.26"
+evm_version = "cancun"
+via_ir = true
+optimizer_runs = 200
+fs_permissions = [{ access = "read-write", path = "./" }]
+fuzz = { runs = 1_000 }
+
+[fmt]
+bracket_spacing = true
+int_types = "long"
+line_length = 120
+multiline_func_header = "all"
+number_underscore = "thousands"
+quote_style = "double"
+tab_width = 4
+
+[dependencies]
+forge-std = "1.9.4"
+"@openzeppelin-contracts" = "5.1.0"
+tnt-core = { version = "0.10.4", git = "https://github.com/tangle-network/tnt-core.git", rev = "v0.10.4" }
+"@openzeppelin-contracts-upgradeable" = "5.1.0"

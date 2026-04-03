@@ -26,3 +26,6 @@ k256 = { version = "0.13", features = ["ecdsa"] }
 ndarray = "0.16"
 sha2 = "0.10"
 prometheus = "0.13"
+blueprint-crypto = { git = "https://github.com/tangle-network/blueprint", branch = "main" }
+libp2p = { version = "0.54", features = ["identify"] }
+crossbeam-channel = "0.5"
