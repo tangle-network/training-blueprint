@@ -2,7 +2,6 @@ pub mod checkpoint;
 pub mod config;
 pub mod coordinator;
 pub mod demo;
-pub mod health;
 pub mod network;
 pub mod qos;
 pub mod server;

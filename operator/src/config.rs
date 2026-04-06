@@ -1,31 +1,34 @@
-//! Operator configuration — training, networking, billing, GPU, and Tangle settings.
-
-use blueprint_sdk::std::fmt;
-use blueprint_sdk::std::path::PathBuf;
+//! Operator configuration — training-specific settings plus shared core types.
+//!
+//! Shared infrastructure config (`TangleConfig`, `ServerConfig`, `BillingConfig`,
+//! `GpuConfig`) lives in `tangle-inference-core` and is re-exported here for
+//! convenience.
 
 use serde::{Deserialize, Serialize};
+
+pub use tangle_inference_core::{BillingConfig, GpuConfig, ServerConfig, TangleConfig};
 
 use crate::qos::QoSConfig;
 
 /// Top-level operator configuration.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OperatorConfig {
-    /// Tangle network configuration.
+    /// Tangle network configuration (shared).
     pub tangle: TangleConfig,
 
-    /// Training backend configuration.
+    /// Training backend configuration (training-specific).
     pub training: TrainingConfig,
 
-    /// HTTP server configuration.
+    /// HTTP server configuration (shared).
     pub server: ServerConfig,
 
-    /// Networking (libp2p) configuration.
+    /// Networking (libp2p) configuration (training-specific).
     pub network: NetworkConfig,
 
-    /// Billing configuration.
+    /// Billing / ShieldedCredits configuration (shared).
     pub billing: BillingConfig,
 
-    /// GPU configuration.
+    /// GPU configuration (shared).
     pub gpu: GpuConfig,
 
     /// QoS heartbeat configuration (optional).
@@ -33,62 +36,16 @@ pub struct OperatorConfig {
     pub qos: Option<QoSConfig>,
 }
 
-impl fmt::Debug for OperatorConfig {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("OperatorConfig")
-            .field("tangle", &self.tangle)
-            .field("training", &self.training)
-            .field("server", &self.server)
-            .field("network", &self.network)
-            .field("billing", &self.billing)
-            .field("gpu", &self.gpu)
-            .finish()
-    }
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-pub struct TangleConfig {
-    /// JSON-RPC endpoint for the Tangle EVM chain.
-    pub rpc_url: String,
-
-    /// Chain ID.
-    pub chain_id: u64,
-
-    /// Operator's private key (hex). Use KMS in production.
-    pub operator_key: String,
-
-    /// Tangle core contract address.
-    pub tangle_core: String,
-
-    /// ShieldedCredits contract address.
-    pub shielded_credits: String,
-
-    /// Blueprint ID.
-    pub blueprint_id: u64,
-
-    /// Service ID (set after service activation).
-    pub service_id: Option<u64>,
-}
-
-impl fmt::Debug for TangleConfig {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TangleConfig")
-            .field("rpc_url", &self.rpc_url)
-            .field("chain_id", &self.chain_id)
-            .field("operator_key", &"[REDACTED]")
-            .field("blueprint_id", &self.blueprint_id)
-            .field("service_id", &self.service_id)
-            .finish()
-    }
-}
-
-/// Training backend configuration.
+/// Training backend configuration — the only truly training-specific config
+/// section. Everything else comes from `tangle-inference-core`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrainingConfig {
     /// Training backend HTTP endpoint (e.g. "http://localhost:5000").
-    /// Can be overridden by TRAINING_ENDPOINT env var.
     #[serde(default = "default_training_endpoint")]
     pub endpoint: String,
+
+    /// Price per GPU-hour in tsUSD base units (6 decimals).
+    pub price_per_gpu_hour: u64,
 
     /// DeMo sync interval in local training steps.
     #[serde(default = "default_sync_interval")]
@@ -101,18 +58,10 @@ pub struct TrainingConfig {
     /// Supported training methods.
     #[serde(default = "default_supported_methods")]
     pub supported_methods: Vec<String>,
-}
 
-/// HTTP server configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ServerConfig {
-    /// Bind host.
-    #[serde(default = "default_host")]
-    pub host: String,
-
-    /// Bind port.
-    #[serde(default = "default_port")]
-    pub port: u16,
+    /// Network bandwidth in Mbps (for DeMo efficiency estimation).
+    #[serde(default = "default_bandwidth")]
+    pub network_bandwidth_mbps: u64,
 }
 
 /// Networking (libp2p) configuration.
@@ -127,39 +76,11 @@ pub struct NetworkConfig {
     pub bootstrap_peers: Vec<String>,
 }
 
-/// Billing configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BillingConfig {
-    /// Price per GPU-hour in tsUSD base units (6 decimals).
-    pub price_per_gpu_hour: u64,
-
-    /// Whether billing is required.
-    #[serde(default = "default_billing_required")]
-    pub required: bool,
-}
-
-/// GPU hardware configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GpuConfig {
-    /// Number of GPUs available.
-    pub gpu_count: u32,
-
-    /// Total VRAM across all GPUs in MiB.
-    pub total_vram_mib: u32,
-
-    /// GPU model name for on-chain registration.
-    #[serde(default)]
-    pub gpu_model: Option<String>,
-
-    /// Network bandwidth in Mbps (for DeMo efficiency estimation).
-    #[serde(default = "default_bandwidth")]
-    pub network_bandwidth_mbps: u64,
-}
-
 // --- Defaults ---
 
 fn default_training_endpoint() -> String {
-    blueprint_sdk::std::env::var("TRAINING_ENDPOINT").unwrap_or_else(|_| "http://localhost:5000".to_string())
+    blueprint_sdk::std::env::var("TRAINING_ENDPOINT")
+        .unwrap_or_else(|_| "http://localhost:5000".to_string())
 }
 
 fn default_sync_interval() -> u64 {
@@ -179,24 +100,12 @@ fn default_supported_methods() -> Vec<String> {
     ]
 }
 
-fn default_host() -> String {
-    "0.0.0.0".to_string()
-}
-
-fn default_port() -> u16 {
-    8080
+fn default_bandwidth() -> u64 {
+    1000 // 1 Gbps default
 }
 
 fn default_listen_addr() -> String {
     "/ip4/0.0.0.0/tcp/9000".to_string()
-}
-
-fn default_billing_required() -> bool {
-    true
-}
-
-fn default_bandwidth() -> u64 {
-    1000 // 1 Gbps default
 }
 
 impl OperatorConfig {
@@ -231,15 +140,16 @@ mod tests {
                 "rpc_url": "http://localhost:8545",
                 "chain_id": 31337,
                 "operator_key": "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
-                "tangle_core": "0x0000000000000000000000000000000000000001",
                 "shielded_credits": "0x0000000000000000000000000000000000000002",
                 "blueprint_id": 1,
                 "service_id": null
             },
             "training": {
                 "endpoint": "http://localhost:5000",
+                "price_per_gpu_hour": 1000000,
                 "sync_interval_steps": 500,
-                "max_operators": 64
+                "max_operators": 64,
+                "network_bandwidth_mbps": 10000
             },
             "server": {
                 "host": "0.0.0.0",
@@ -250,13 +160,13 @@ mod tests {
                 "bootstrap_peers": []
             },
             "billing": {
-                "price_per_gpu_hour": 1000000
+                "max_spend_per_request": 1000000,
+                "min_credit_balance": 1000
             },
             "gpu": {
-                "gpu_count": 4,
-                "total_vram_mib": 327680,
-                "gpu_model": "NVIDIA H100",
-                "network_bandwidth_mbps": 10000
+                "expected_gpu_count": 4,
+                "min_vram_mib": 81920,
+                "gpu_model": "NVIDIA H100"
             }
         }"#
     }
@@ -265,9 +175,10 @@ mod tests {
     fn test_deserialize_config() {
         let cfg: OperatorConfig = serde_json::from_str(example_config_json()).unwrap();
         assert_eq!(cfg.tangle.chain_id, 31337);
-        assert_eq!(cfg.gpu.gpu_count, 4);
-        assert_eq!(cfg.gpu.total_vram_mib, 327680);
+        assert_eq!(cfg.gpu.expected_gpu_count, 4);
+        assert_eq!(cfg.gpu.min_vram_mib, 81920);
         assert_eq!(cfg.training.sync_interval_steps, 500);
+        assert_eq!(cfg.training.price_per_gpu_hour, 1000000);
         assert_eq!(cfg.server.port, 8080);
     }
 
@@ -278,22 +189,22 @@ mod tests {
                 "rpc_url": "http://localhost:8545",
                 "chain_id": 31337,
                 "operator_key": "0xdead",
-                "tangle_core": "0x01",
                 "shielded_credits": "0x02",
                 "blueprint_id": 1
             },
-            "training": {},
+            "training": { "price_per_gpu_hour": 1000000 },
             "server": {},
             "network": {},
-            "billing": { "price_per_gpu_hour": 1000000 },
-            "gpu": { "gpu_count": 1, "total_vram_mib": 24000 }
+            "billing": { "max_spend_per_request": 1000000, "min_credit_balance": 1000 },
+            "gpu": { "expected_gpu_count": 1, "min_vram_mib": 24000 }
         }"#;
         let cfg: OperatorConfig = serde_json::from_str(json).unwrap();
         assert_eq!(cfg.training.sync_interval_steps, 500);
         assert_eq!(cfg.training.max_operators, 256);
         assert_eq!(cfg.server.host, "0.0.0.0");
         assert_eq!(cfg.server.port, 8080);
+        assert_eq!(cfg.server.max_concurrent_requests, 64);
         assert_eq!(cfg.network.listen_addr, "/ip4/0.0.0.0/tcp/9000");
-        assert_eq!(cfg.gpu.network_bandwidth_mbps, 1000);
+        assert_eq!(cfg.gpu.monitor_interval_secs, 30);
     }
 }

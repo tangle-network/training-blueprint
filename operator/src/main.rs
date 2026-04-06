@@ -12,7 +12,6 @@ use blueprint_crypto::k256::K256Ecdsa;
 use blueprint_networking::service::{AllowedKeys, NetworkCommandMessage, NetworkConfig as NetConfig};
 
 use distributed_training::config::OperatorConfig;
-use distributed_training::health;
 use distributed_training::network::{self, TrainingNetwork, MOMENTUM_TOPIC, COORDINATION_TOPIC};
 use distributed_training::TrainingServer;
 
@@ -23,9 +22,9 @@ fn setup_log() {
 }
 
 fn registration_payload(config: &OperatorConfig) -> Vec<u8> {
-    let gpu_count = config.gpu.gpu_count;
-    let total_vram = config.gpu.total_vram_mib;
-    let bandwidth = config.gpu.network_bandwidth_mbps;
+    let gpu_count = config.gpu.expected_gpu_count;
+    let total_vram = config.gpu.min_vram_mib;
+    let bandwidth = config.training.network_bandwidth_mbps;
     let gpu_model = config
         .gpu
         .gpu_model
@@ -59,16 +58,16 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
             .map_err(|e| blueprint_sdk::Error::Other(e.to_string()))?;
         tracing::info!(
             path = %output_path.display(),
-            gpu_count = config.gpu.gpu_count,
-            vram_mib = config.gpu.total_vram_mib,
-            bandwidth_mbps = config.gpu.network_bandwidth_mbps,
+            gpu_count = config.gpu.expected_gpu_count,
+            vram_mib = config.gpu.min_vram_mib,
+            bandwidth_mbps = config.training.network_bandwidth_mbps,
             "Registration payload saved"
         );
         return Ok(());
     }
 
     // Detect GPUs
-    match health::detect_gpus().await {
+    match tangle_inference_core::detect_gpus().await {
         Ok(gpus) => {
             tracing::info!(count = gpus.len(), "detected GPUs");
             for gpu in &gpus {

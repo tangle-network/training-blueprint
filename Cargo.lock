@@ -3790,6 +3790,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tangle-inference-core",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -8986,6 +8987,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "tangle-inference-core"
+version = "0.1.0"
+source = "git+https://github.com/tangle-network/tangle-inference-core?branch=master#f49ca3cc7218406edddcc5e8f0c914d48aeab8f7"
+dependencies = [
+ "alloy",
+ "anyhow",
+ "axum 0.7.9",
+ "hex",
+ "k256",
+ "prometheus 0.13.4",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower-http 0.6.8",
+ "tracing",
+]
+
+[[package]]
 name = "tap"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9483,8 +9503,10 @@ dependencies = [
  "futures-util",
  "http 1.4.0",
  "http-body 1.0.1",
+ "http-body-util",
  "iri-string",
  "pin-project-lite",
+ "tokio",
  "tower",
  "tower-layer",
  "tower-service",

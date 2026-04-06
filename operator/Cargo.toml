@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 blueprint-sdk = { workspace = true, features = ["tee"] }
 blueprint-networking = { workspace = true }
+tangle-inference-core = { git = "https://github.com/tangle-network/tangle-inference-core", branch = "master" }
 alloy = { workspace = true }
 alloy-sol-types = { workspace = true }
 tokio = { workspace = true }

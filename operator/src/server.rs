@@ -1,11 +1,13 @@
 //! HTTP API server for the distributed training operator.
 //!
 //! Endpoints:
-//! - POST /v1/training/jobs          — create or join a training job
-//! - GET  /v1/training/jobs/:id      — get job status
-//! - POST /v1/training/jobs/:id/leave — gracefully leave a job
-//! - GET  /v1/training/jobs/:id/checkpoint — download latest checkpoint
-//! - GET  /health                    — health check
+//! - POST /v1/training/jobs          -- create or join a training job
+//! - GET  /v1/training/jobs/:id      -- get job status
+//! - POST /v1/training/jobs/:id/leave -- gracefully leave a job
+//! - GET  /v1/training/jobs/:id/checkpoint -- download latest checkpoint
+//! - GET  /health                    -- health check
+//! - GET  /health/gpu                -- GPU health (from core)
+//! - GET  /metrics                   -- Prometheus metrics (from core)
 
 use blueprint_sdk::std::sync::Arc;
 
@@ -39,6 +41,8 @@ pub async fn start(state: AppState) -> anyhow::Result<JoinHandle<()>> {
         .route("/v1/training/jobs/{id}/leave", post(leave_job))
         .route("/v1/training/jobs/{id}/checkpoint", get(get_checkpoint))
         .route("/health", get(health_check))
+        .route("/health/gpu", get(gpu_health))
+        .route("/metrics", get(metrics_handler))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state.clone());
@@ -92,9 +96,6 @@ async fn create_job(
     State(state): State<AppState>,
     Json(req): Json<CreateJobRequest>,
 ) -> impl IntoResponse {
-    // SpendAuth validation placeholder — in production, validate X-Payment-Signature
-    // header against ShieldedCredits contract.
-
     match state
         .coordinator
         .start_or_join_job(
@@ -166,7 +167,7 @@ async fn leave_job(
 }
 
 async fn get_checkpoint(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     Path(id): Path<u64>,
 ) -> impl IntoResponse {
     match crate::checkpoint::latest_checkpoint(id).await {
@@ -206,7 +207,7 @@ async fn get_checkpoint(
 }
 
 async fn health_check() -> impl IntoResponse {
-    let gpu_status = match crate::health::detect_gpus().await {
+    let gpu_status = match tangle_inference_core::detect_gpus().await {
         Ok(gpus) => serde_json::json!({
             "available": true,
             "count": gpus.len(),
@@ -223,4 +224,23 @@ async fn health_check() -> impl IntoResponse {
         "service": "distributed-training-operator",
         "gpu": gpu_status,
     }))
+}
+
+async fn gpu_health() -> Result<Json<Vec<tangle_inference_core::GpuInfo>>, (StatusCode, String)> {
+    match tangle_inference_core::detect_gpus().await {
+        Ok(gpus) => Ok(Json(gpus)),
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
+}
+
+async fn metrics_handler() -> impl IntoResponse {
+    let body = tangle_inference_core::metrics::gather();
+    (
+        StatusCode::OK,
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        body,
+    )
 }
