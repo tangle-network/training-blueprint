@@ -20,8 +20,11 @@ use blueprint_sdk::tangle::layers::TangleLayer;
 use blueprint_sdk::Job;
 use tokio::sync::oneshot;
 
+use tangle_inference_core::AppState;
+
 use crate::config::OperatorConfig;
 use crate::coordinator::TrainingCoordinator;
+use crate::server::TrainingAppBackend;
 
 // --- ABI types for on-chain job encoding ---
 
@@ -193,10 +196,25 @@ impl BackgroundService for TrainingServer {
 
             register_coordinator(coord.clone());
 
-            // Start the HTTP API server
-            let state = server::AppState {
+            // Build core AppState with billing support
+            let backend = TrainingAppBackend {
                 config: config.clone(),
                 coordinator: coord.clone(),
+            };
+
+            let state = match AppState::from_config(
+                &config.tangle,
+                &config.server,
+                &config.billing,
+                config.server.max_concurrent_requests,
+                backend,
+            ) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to build AppState");
+                    let _ = tx.send(Err(RunnerError::Other(format!("{e}").into())));
+                    return;
+                }
             };
 
             match server::start(state).await {

@@ -13,7 +13,7 @@ use blueprint_sdk::std::sync::Arc;
 
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
     Json, Router as HttpRouter,
@@ -23,31 +23,41 @@ use tokio::task::JoinHandle;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
+use tangle_inference_core::server::{
+    acquire_permit, billing_gate, error_response, gpu_health_handler, metrics_handler,
+    settle_billing,
+};
+use tangle_inference_core::AppState;
+
 use crate::config::OperatorConfig;
 use crate::coordinator::TrainingCoordinator;
 
-/// Shared application state.
-#[derive(Clone)]
-pub struct AppState {
+/// Minimum billing cost for read-only / admin endpoints (status, checkpoint).
+/// Requires valid SpendAuth but is essentially free.
+const MIN_ADMIN_COST: u64 = 1000;
+
+/// Backend state attached to AppState.
+pub struct TrainingAppBackend {
     pub config: Arc<OperatorConfig>,
     pub coordinator: Arc<TrainingCoordinator>,
 }
 
 /// Start the HTTP server. Returns a JoinHandle.
 pub async fn start(state: AppState) -> anyhow::Result<JoinHandle<()>> {
+    let bind_addr = format!("{}:{}", state.server_config.host, state.server_config.port);
+
     let app = HttpRouter::new()
         .route("/v1/training/jobs", post(create_job))
         .route("/v1/training/jobs/{id}", get(get_job))
         .route("/v1/training/jobs/{id}/leave", post(leave_job))
         .route("/v1/training/jobs/{id}/checkpoint", get(get_checkpoint))
         .route("/health", get(health_check))
-        .route("/health/gpu", get(gpu_health))
+        .route("/health/gpu", get(gpu_health_handler))
         .route("/metrics", get(metrics_handler))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
-        .with_state(state.clone());
+        .with_state(state);
 
-    let bind_addr = format!("{}:{}", state.config.server.host, state.config.server.port);
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
 
     tracing::info!(addr = %bind_addr, "HTTP server listening");
@@ -85,18 +95,42 @@ struct CreateJobResponse {
     message: String,
 }
 
-#[derive(Debug, Serialize)]
-struct ErrorResponse {
-    error: String,
+// --- Helpers ---
+
+fn backend_from(state: &AppState) -> &TrainingAppBackend {
+    state
+        .backend::<TrainingAppBackend>()
+        .expect("TrainingAppBackend (checked in lib.rs)")
 }
 
 // --- Handlers ---
 
 async fn create_job(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(req): Json<CreateJobRequest>,
 ) -> impl IntoResponse {
-    match state
+    let backend = backend_from(&state);
+
+    // Concurrency gate
+    let _permit = match acquire_permit(&state) {
+        Ok(p) => p,
+        Err(resp) => return resp.into_response(),
+    };
+
+    // Billing gate — estimate cost from total_epochs as a rough proxy for GPU-hours.
+    // Each epoch is ~1 GPU-hour on average. Actual cost settled on completion.
+    let estimated_gpu_hours = req.total_epochs as u64;
+    let estimated_cost = estimated_gpu_hours * backend.config.training.price_per_gpu_hour;
+    let (spend_auth, preauth) =
+        match billing_gate(&state, &headers, None, estimated_cost).await {
+            Ok(v) => v,
+            Err(resp) => return resp.into_response(),
+        };
+
+    let start_time = std::time::Instant::now();
+
+    match backend
         .coordinator
         .start_or_join_job(
             req.job_id,
@@ -108,68 +142,109 @@ async fn create_job(
         )
         .await
     {
-        Ok(result) => (
-            StatusCode::OK,
-            Json(CreateJobResponse {
-                job_id: req.job_id,
-                status: "running".to_string(),
-                message: format!(
-                    "Training job started. Checkpoint: {}",
-                    hex::encode(result.checkpoint_hash)
-                ),
-            }),
-        )
-            .into_response(),
-        Err(e) => (
+        Ok(result) => {
+            // Settle billing based on actual compute time
+            let compute_secs = start_time.elapsed().as_secs();
+            let actual_gpu_hours = (compute_secs + 3599) / 3600; // round up
+            let actual_cost = actual_gpu_hours * backend.config.training.price_per_gpu_hour;
+            if let Some(ref auth) = spend_auth {
+                if let Err(e) = settle_billing(
+                    &state.billing,
+                    auth,
+                    preauth.unwrap_or(0),
+                    actual_cost,
+                )
+                .await
+                {
+                    tracing::error!(error = %e, "billing settlement failed");
+                }
+            }
+
+            (
+                StatusCode::OK,
+                Json(CreateJobResponse {
+                    job_id: req.job_id,
+                    status: "running".to_string(),
+                    message: format!(
+                        "Training job started. Checkpoint: {}",
+                        hex::encode(result.checkpoint_hash)
+                    ),
+                }),
+            )
+                .into_response()
+        }
+        Err(e) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: e.to_string(),
-            }),
+            e.to_string(),
+            "internal_error",
+            "job_failed",
         )
-            .into_response(),
+        .into_response(),
     }
 }
 
 async fn get_job(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(id): Path<u64>,
 ) -> impl IntoResponse {
-    match state.coordinator.get_job_status(id).await {
+    let backend = backend_from(&state);
+
+    // Billing gate — minimal cost for status checks
+    if let Err(resp) = billing_gate(&state, &headers, None, MIN_ADMIN_COST).await {
+        return resp.into_response();
+    }
+
+    match backend.coordinator.get_job_status(id).await {
         Some(status) => (StatusCode::OK, Json(status)).into_response(),
-        None => (
+        None => error_response(
             StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: format!("job {id} not found"),
-            }),
+            format!("job {id} not found"),
+            "not_found",
+            "job_not_found",
         )
-            .into_response(),
+        .into_response(),
     }
 }
 
 async fn leave_job(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(id): Path<u64>,
 ) -> impl IntoResponse {
-    match state.coordinator.handle_leave(id).await {
+    let backend = backend_from(&state);
+
+    // Billing gate — minimal cost for leave requests
+    if let Err(resp) = billing_gate(&state, &headers, None, MIN_ADMIN_COST).await {
+        return resp.into_response();
+    }
+
+    match backend.coordinator.handle_leave(id).await {
         Ok(()) => (
             StatusCode::OK,
             Json(serde_json::json!({ "acknowledged": true })),
         )
             .into_response(),
-        Err(e) => (
+        Err(e) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: e.to_string(),
-            }),
+            e.to_string(),
+            "internal_error",
+            "leave_failed",
         )
-            .into_response(),
+        .into_response(),
     }
 }
 
 async fn get_checkpoint(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
     Path(id): Path<u64>,
 ) -> impl IntoResponse {
+    // Billing gate — minimal cost for checkpoint downloads
+    if let Err(resp) = billing_gate(&state, &headers, None, MIN_ADMIN_COST).await {
+        return resp.into_response();
+    }
+
     match crate::checkpoint::latest_checkpoint(id).await {
         Ok(Some(path)) => match tokio::fs::read(&path).await {
             Ok(data) => (
@@ -181,28 +256,28 @@ async fn get_checkpoint(
                 data,
             )
                 .into_response(),
-            Err(e) => (
+            Err(e) => error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("failed to read checkpoint: {e}"),
-                }),
+                format!("failed to read checkpoint: {e}"),
+                "internal_error",
+                "checkpoint_read_failed",
             )
-                .into_response(),
+            .into_response(),
         },
-        Ok(None) => (
+        Ok(None) => error_response(
             StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: format!("no checkpoint found for job {id}"),
-            }),
+            format!("no checkpoint found for job {id}"),
+            "not_found",
+            "checkpoint_not_found",
         )
-            .into_response(),
-        Err(e) => (
+        .into_response(),
+        Err(e) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: e.to_string(),
-            }),
+            e.to_string(),
+            "internal_error",
+            "checkpoint_error",
         )
-            .into_response(),
+        .into_response(),
     }
 }
 
@@ -224,23 +299,4 @@ async fn health_check() -> impl IntoResponse {
         "service": "distributed-training-operator",
         "gpu": gpu_status,
     }))
-}
-
-async fn gpu_health() -> Result<Json<Vec<tangle_inference_core::GpuInfo>>, (StatusCode, String)> {
-    match tangle_inference_core::detect_gpus().await {
-        Ok(gpus) => Ok(Json(gpus)),
-        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
-    }
-}
-
-async fn metrics_handler() -> impl IntoResponse {
-    let body = tangle_inference_core::metrics::gather();
-    (
-        StatusCode::OK,
-        [(
-            axum::http::header::CONTENT_TYPE,
-            "text/plain; version=0.0.4; charset=utf-8",
-        )],
-        body,
-    )
 }
