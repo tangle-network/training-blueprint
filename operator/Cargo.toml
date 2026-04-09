@@ -46,6 +46,9 @@ blueprint-crypto = { workspace = true }
 libp2p = { version = "0.54", features = ["identify"] }
 crossbeam-channel = "0.5"
 rand = "0.8"
+blueprint-webhooks = { git = "https://github.com/tangle-network/blueprint", branch = "feat/wire-remote-gpu-provisioning", features = ["notifier"] }
+tokio-stream = "0.1"
+futures = "0.3"
 
 [dev-dependencies]
 blueprint-sdk = { git = "https://github.com/tangle-network/blueprint", branch = "main", features = ["testing", "tangle"] }
