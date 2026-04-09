@@ -102,6 +102,8 @@ struct CreateJobResponse {
     job_id: u64,
     status: String,
     message: String,
+    /// Bearer token for connecting to the SSE events endpoint.
+    sse_token: String,
 }
 
 // --- Helpers ---
@@ -141,6 +143,9 @@ async fn create_job(
     let notifier = backend.notifier.clone();
     let job_id_str = req.job_id.to_string();
     let webhook_url = req.webhook_url.clone();
+
+    // Register job with notifier to get SSE auth token
+    let sse_token = notifier.register_job(&job_id_str).await;
 
     // Notify: job is now processing
     let _ = notifier
@@ -210,6 +215,7 @@ async fn create_job(
                         "Training job started. Checkpoint: {}",
                         hex::encode(result.checkpoint_hash)
                     ),
+                    sse_token,
                 }),
             )
                 .into_response()
@@ -339,10 +345,41 @@ async fn get_checkpoint(
 
 async fn sse_handler(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(job_id): Path<String>,
 ) -> impl IntoResponse {
     let backend = backend_from(&state);
-    let rx = backend.notifier.subscribe(&job_id).await;
+
+    // Validate bearer token
+    let token = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+    match token {
+        Some(t) if backend.notifier.validate_job_token(&job_id, t).await => {}
+        _ => {
+            return error_response(
+                StatusCode::UNAUTHORIZED,
+                "invalid or missing SSE bearer token".into(),
+                "auth_error",
+                "invalid_sse_token",
+            )
+            .into_response();
+        }
+    }
+
+    let rx = match backend.notifier.subscribe(&job_id).await {
+        Some(r) => r,
+        None => {
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "subscriber capacity exceeded".into(),
+                "capacity_error",
+                "too_many_subscribers",
+            )
+            .into_response();
+        }
+    };
     let stream = tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|result| match result {
         Ok(event) => {
             let data = serde_json::to_string(&event)
@@ -358,11 +395,13 @@ async fn sse_handler(
         }
     });
 
-    Sse::new(stream).keep_alive(
-        KeepAlive::new()
-            .interval(std::time::Duration::from_secs(15))
-            .text("ping"),
-    )
+    Sse::new(stream)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(std::time::Duration::from_secs(15))
+                .text("ping"),
+        )
+        .into_response()
 }
 
 async fn health_check() -> impl IntoResponse {

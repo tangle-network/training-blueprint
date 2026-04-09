@@ -2332,7 +2332,7 @@ dependencies = [
 [[package]]
 name = "blueprint-auth"
 version = "0.2.0-alpha.2"
-source = "git+https://github.com/tangle-network/blueprint?branch=feat%2Fwire-remote-gpu-provisioning#dd28dcf50545079c2bbafa0d92343c3b16753e51"
+source = "git+https://github.com/tangle-network/blueprint?branch=feat%2Fwire-remote-gpu-provisioning#16e154656c4aa59eab2d0406808bc372e3e6e320"
 dependencies = [
  "axum 0.8.8",
  "base64 0.22.1",
@@ -2490,7 +2490,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "tnt-core-bindings",
+ "tnt-core-bindings 0.10.6",
  "tokio",
  "tracing",
  "url",
@@ -2549,7 +2549,7 @@ dependencies = [
 [[package]]
 name = "blueprint-core"
 version = "0.2.0-alpha.2"
-source = "git+https://github.com/tangle-network/blueprint?branch=feat%2Fwire-remote-gpu-provisioning#dd28dcf50545079c2bbafa0d92343c3b16753e51"
+source = "git+https://github.com/tangle-network/blueprint?branch=feat%2Fwire-remote-gpu-provisioning#16e154656c4aa59eab2d0406808bc372e3e6e320"
 dependencies = [
  "bytes",
  "futures-util",
@@ -2599,7 +2599,7 @@ dependencies = [
 [[package]]
 name = "blueprint-crypto"
 version = "0.2.0-alpha.2"
-source = "git+https://github.com/tangle-network/blueprint?branch=feat%2Fwire-remote-gpu-provisioning#dd28dcf50545079c2bbafa0d92343c3b16753e51"
+source = "git+https://github.com/tangle-network/blueprint?branch=feat%2Fwire-remote-gpu-provisioning#16e154656c4aa59eab2d0406808bc372e3e6e320"
 dependencies = [
  "blueprint-crypto-bls 0.2.0-alpha.2",
  "blueprint-crypto-bn254 0.2.0-alpha.2",
@@ -2631,7 +2631,7 @@ dependencies = [
 [[package]]
 name = "blueprint-crypto-bls"
 version = "0.2.0-alpha.2"
-source = "git+https://github.com/tangle-network/blueprint?branch=feat%2Fwire-remote-gpu-provisioning#dd28dcf50545079c2bbafa0d92343c3b16753e51"
+source = "git+https://github.com/tangle-network/blueprint?branch=feat%2Fwire-remote-gpu-provisioning#16e154656c4aa59eab2d0406808bc372e3e6e320"
 dependencies = [
  "ark-serialize 0.5.0",
  "blueprint-crypto-core 0.2.0-alpha.2",
@@ -2669,7 +2669,7 @@ dependencies = [
 [[package]]
 name = "blueprint-crypto-bn254"
 version = "0.2.0-alpha.2"
-source = "git+https://github.com/tangle-network/blueprint?branch=feat%2Fwire-remote-gpu-provisioning#dd28dcf50545079c2bbafa0d92343c3b16753e51"
+source = "git+https://github.com/tangle-network/blueprint?branch=feat%2Fwire-remote-gpu-provisioning#16e154656c4aa59eab2d0406808bc372e3e6e320"
 dependencies = [
  "ark-bn254",
  "ark-ec",
@@ -2702,7 +2702,7 @@ dependencies = [
 [[package]]
 name = "blueprint-crypto-core"
 version = "0.2.0-alpha.2"
-source = "git+https://github.com/tangle-network/blueprint?branch=feat%2Fwire-remote-gpu-provisioning#dd28dcf50545079c2bbafa0d92343c3b16753e51"
+source = "git+https://github.com/tangle-network/blueprint?branch=feat%2Fwire-remote-gpu-provisioning#16e154656c4aa59eab2d0406808bc372e3e6e320"
 dependencies = [
  "blueprint-std 0.2.0-alpha.2",
  "clap",
@@ -2728,7 +2728,7 @@ dependencies = [
 [[package]]
 name = "blueprint-crypto-ed25519"
 version = "0.2.0-alpha.2"
-source = "git+https://github.com/tangle-network/blueprint?branch=feat%2Fwire-remote-gpu-provisioning#dd28dcf50545079c2bbafa0d92343c3b16753e51"
+source = "git+https://github.com/tangle-network/blueprint?branch=feat%2Fwire-remote-gpu-provisioning#16e154656c4aa59eab2d0406808bc372e3e6e320"
 dependencies = [
  "blueprint-crypto-core 0.2.0-alpha.2",
  "blueprint-std 0.2.0-alpha.2",
@@ -2757,7 +2757,7 @@ dependencies = [
 [[package]]
 name = "blueprint-crypto-hashing"
 version = "0.2.0-alpha.2"
-source = "git+https://github.com/tangle-network/blueprint?branch=feat%2Fwire-remote-gpu-provisioning#dd28dcf50545079c2bbafa0d92343c3b16753e51"
+source = "git+https://github.com/tangle-network/blueprint?branch=feat%2Fwire-remote-gpu-provisioning#16e154656c4aa59eab2d0406808bc372e3e6e320"
 dependencies = [
  "argon2",
  "blake3",
@@ -2787,7 +2787,7 @@ dependencies = [
 [[package]]
 name = "blueprint-crypto-k256"
 version = "0.2.0-alpha.2"
-source = "git+https://github.com/tangle-network/blueprint?branch=feat%2Fwire-remote-gpu-provisioning#dd28dcf50545079c2bbafa0d92343c3b16753e51"
+source = "git+https://github.com/tangle-network/blueprint?branch=feat%2Fwire-remote-gpu-provisioning#16e154656c4aa59eab2d0406808bc372e3e6e320"
 dependencies = [
  "alloy-primitives",
  "alloy-signer-local",
@@ -2819,7 +2819,7 @@ dependencies = [
 [[package]]
 name = "blueprint-crypto-sr25519"
 version = "0.2.0-alpha.2"
-source = "git+https://github.com/tangle-network/blueprint?branch=feat%2Fwire-remote-gpu-provisioning#dd28dcf50545079c2bbafa0d92343c3b16753e51"
+source = "git+https://github.com/tangle-network/blueprint?branch=feat%2Fwire-remote-gpu-provisioning#16e154656c4aa59eab2d0406808bc372e3e6e320"
 dependencies = [
  "blueprint-crypto-core 0.2.0-alpha.2",
  "blueprint-std 0.2.0-alpha.2",
@@ -2899,7 +2899,7 @@ dependencies = [
 [[package]]
 name = "blueprint-evm-extra"
 version = "0.2.0-alpha.2"
-source = "git+https://github.com/tangle-network/blueprint?branch=feat%2Fwire-remote-gpu-provisioning#dd28dcf50545079c2bbafa0d92343c3b16753e51"
+source = "git+https://github.com/tangle-network/blueprint?branch=feat%2Fwire-remote-gpu-provisioning#16e154656c4aa59eab2d0406808bc372e3e6e320"
 dependencies = [
  "alloy-consensus",
  "alloy-network",
@@ -2964,7 +2964,7 @@ dependencies = [
 [[package]]
 name = "blueprint-keystore"
 version = "0.2.0-alpha.2"
-source = "git+https://github.com/tangle-network/blueprint?branch=feat%2Fwire-remote-gpu-provisioning#dd28dcf50545079c2bbafa0d92343c3b16753e51"
+source = "git+https://github.com/tangle-network/blueprint?branch=feat%2Fwire-remote-gpu-provisioning#16e154656c4aa59eab2d0406808bc372e3e6e320"
 dependencies = [
  "alloy-primitives",
  "ark-serialize 0.5.0",
@@ -3019,7 +3019,7 @@ dependencies = [
 [[package]]
 name = "blueprint-manager-bridge"
 version = "0.2.0-alpha.2"
-source = "git+https://github.com/tangle-network/blueprint?branch=feat%2Fwire-remote-gpu-provisioning#dd28dcf50545079c2bbafa0d92343c3b16753e51"
+source = "git+https://github.com/tangle-network/blueprint?branch=feat%2Fwire-remote-gpu-provisioning#16e154656c4aa59eab2d0406808bc372e3e6e320"
 dependencies = [
  "blueprint-auth 0.2.0-alpha.2",
  "blueprint-core 0.2.0-alpha.2",
@@ -3113,7 +3113,7 @@ dependencies = [
  "sysinfo",
  "tempfile",
  "thiserror 2.0.18",
- "tnt-core-bindings",
+ "tnt-core-bindings 0.10.6",
  "tokio",
  "tonic",
  "tonic-build",
@@ -3127,7 +3127,7 @@ dependencies = [
 [[package]]
 name = "blueprint-qos"
 version = "0.2.0-alpha.2"
-source = "git+https://github.com/tangle-network/blueprint?branch=feat%2Fwire-remote-gpu-provisioning#dd28dcf50545079c2bbafa0d92343c3b16753e51"
+source = "git+https://github.com/tangle-network/blueprint?branch=feat%2Fwire-remote-gpu-provisioning#16e154656c4aa59eab2d0406808bc372e3e6e320"
 dependencies = [
  "alloy-network",
  "alloy-primitives",
@@ -3158,7 +3158,7 @@ dependencies = [
  "sysinfo",
  "tempfile",
  "thiserror 2.0.18",
- "tnt-core-bindings",
+ "tnt-core-bindings 0.10.7",
  "tokio",
  "tonic",
  "tonic-build",
@@ -3187,7 +3187,7 @@ dependencies = [
 [[package]]
 name = "blueprint-router"
 version = "0.2.0-alpha.2"
-source = "git+https://github.com/tangle-network/blueprint?branch=feat%2Fwire-remote-gpu-provisioning#dd28dcf50545079c2bbafa0d92343c3b16753e51"
+source = "git+https://github.com/tangle-network/blueprint?branch=feat%2Fwire-remote-gpu-provisioning#16e154656c4aa59eab2d0406808bc372e3e6e320"
 dependencies = [
  "blueprint-core 0.2.0-alpha.2",
  "bytes",
@@ -3240,7 +3240,7 @@ dependencies = [
 [[package]]
 name = "blueprint-runner"
 version = "0.2.0-alpha.2"
-source = "git+https://github.com/tangle-network/blueprint?branch=feat%2Fwire-remote-gpu-provisioning#dd28dcf50545079c2bbafa0d92343c3b16753e51"
+source = "git+https://github.com/tangle-network/blueprint?branch=feat%2Fwire-remote-gpu-provisioning#16e154656c4aa59eab2d0406808bc372e3e6e320"
 dependencies = [
  "async-trait",
  "blueprint-core 0.2.0-alpha.2",
@@ -3315,7 +3315,7 @@ dependencies = [
 [[package]]
 name = "blueprint-std"
 version = "0.2.0-alpha.2"
-source = "git+https://github.com/tangle-network/blueprint?branch=feat%2Fwire-remote-gpu-provisioning#dd28dcf50545079c2bbafa0d92343c3b16753e51"
+source = "git+https://github.com/tangle-network/blueprint?branch=feat%2Fwire-remote-gpu-provisioning#16e154656c4aa59eab2d0406808bc372e3e6e320"
 dependencies = [
  "colored",
  "num-traits",
@@ -3382,7 +3382,7 @@ dependencies = [
 [[package]]
 name = "blueprint-webhooks"
 version = "0.2.0-alpha.2"
-source = "git+https://github.com/tangle-network/blueprint?branch=feat%2Fwire-remote-gpu-provisioning#dd28dcf50545079c2bbafa0d92343c3b16753e51"
+source = "git+https://github.com/tangle-network/blueprint?branch=feat%2Fwire-remote-gpu-provisioning#16e154656c4aa59eab2d0406808bc372e3e6e320"
 dependencies = [
  "axum 0.8.8",
  "blueprint-core 0.2.0-alpha.2",
@@ -3392,6 +3392,7 @@ dependencies = [
  "hex",
  "hmac",
  "http 1.4.0",
+ "rand 0.8.5",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -6412,7 +6413,7 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "serde_core",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -11091,7 +11092,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "230a1b821ccbd75b185820a1f1ff7b14d21da1e442e22c0863ea5f08771a8874"
 dependencies = [
  "rustix 1.1.4",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -11275,6 +11276,17 @@ name = "tnt-core-bindings"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0a89d9fa312130794248e958919b159ed1efb53a5abf7574ba3267baa1a64de3"
+dependencies = [
+ "alloy",
+ "alloy-contract",
+ "alloy-sol-types",
+ "serde",
+]
+
+[[package]]
+name = "tnt-core-bindings"
+version = "0.10.7"
+source = "git+https://github.com/tangle-network/tnt-core.git?tag=v0.10.7#93e601438b75b8cf0125c2410bea515e36b10393"
 dependencies = [
  "alloy",
  "alloy-contract",
@@ -12827,7 +12839,7 @@ dependencies = [
 [[package]]
 name = "workspace-hack"
 version = "0.1.0"
-source = "git+https://github.com/tangle-network/blueprint?branch=feat%2Fwire-remote-gpu-provisioning#dd28dcf50545079c2bbafa0d92343c3b16753e51"
+source = "git+https://github.com/tangle-network/blueprint?branch=feat%2Fwire-remote-gpu-provisioning#16e154656c4aa59eab2d0406808bc372e3e6e320"
 dependencies = [
  "ahash 0.8.12",
  "aho-corasick",
