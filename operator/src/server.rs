@@ -14,10 +14,15 @@ use blueprint_sdk::std::sync::Arc;
 use axum::{
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
-    response::IntoResponse,
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse,
+    },
     routing::{get, post},
     Json, Router as HttpRouter,
 };
+use blueprint_webhooks::notifier::{JobEvent, JobNotifier, JobStatus as WebhookJobStatus};
+use tokio_stream::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
 use tower_http::cors::CorsLayer;
@@ -40,6 +45,7 @@ const MIN_ADMIN_COST: u64 = 1000;
 pub struct TrainingAppBackend {
     pub config: Arc<OperatorConfig>,
     pub coordinator: Arc<TrainingCoordinator>,
+    pub notifier: Arc<JobNotifier>,
 }
 
 /// Start the HTTP server. Returns a JoinHandle.
@@ -51,6 +57,7 @@ pub async fn start(state: AppState) -> anyhow::Result<JoinHandle<()>> {
         .route("/v1/training/jobs/{id}", get(get_job))
         .route("/v1/training/jobs/{id}/leave", post(leave_job))
         .route("/v1/training/jobs/{id}/checkpoint", get(get_checkpoint))
+        .route("/v1/jobs/{job_id}/events", get(sse_handler))
         .route("/health", get(health_check))
         .route("/health/gpu", get(gpu_health_handler))
         .route("/metrics", get(metrics_handler))
@@ -82,6 +89,8 @@ struct CreateJobRequest {
     total_epochs: u32,
     #[serde(default = "default_sync_interval")]
     sync_interval_steps: u64,
+    /// Optional webhook URL for job status notifications.
+    webhook_url: Option<String>,
 }
 
 fn default_sync_interval() -> u64 {
@@ -129,6 +138,21 @@ async fn create_job(
         };
 
     let start_time = std::time::Instant::now();
+    let notifier = backend.notifier.clone();
+    let job_id_str = req.job_id.to_string();
+    let webhook_url = req.webhook_url.clone();
+
+    // Notify: job is now processing
+    let _ = notifier
+        .notify(
+            &job_id_str,
+            JobEvent {
+                status: WebhookJobStatus::Processing,
+                ..Default::default()
+            },
+            webhook_url.as_deref(),
+        )
+        .await;
 
     match backend
         .coordinator
@@ -160,6 +184,23 @@ async fn create_job(
                 }
             }
 
+            // Notify: job completed
+            let _ = notifier
+                .notify(
+                    &job_id_str,
+                    JobEvent {
+                        status: WebhookJobStatus::Completed,
+                        result: Some(serde_json::json!({
+                            "checkpoint_hash": hex::encode(result.checkpoint_hash),
+                            "total_steps": result.total_steps,
+                            "final_epoch": result.final_epoch,
+                        })),
+                        ..Default::default()
+                    },
+                    webhook_url.as_deref(),
+                )
+                .await;
+
             (
                 StatusCode::OK,
                 Json(CreateJobResponse {
@@ -173,13 +214,28 @@ async fn create_job(
             )
                 .into_response()
         }
-        Err(e) => error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            e.to_string(),
-            "internal_error",
-            "job_failed",
-        )
-        .into_response(),
+        Err(e) => {
+            // Notify: job failed
+            let _ = notifier
+                .notify(
+                    &job_id_str,
+                    JobEvent {
+                        status: WebhookJobStatus::Failed,
+                        error: Some(e.to_string()),
+                        ..Default::default()
+                    },
+                    webhook_url.as_deref(),
+                )
+                .await;
+
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                e.to_string(),
+                "internal_error",
+                "job_failed",
+            )
+            .into_response()
+        }
     }
 }
 
@@ -279,6 +335,34 @@ async fn get_checkpoint(
         )
         .into_response(),
     }
+}
+
+async fn sse_handler(
+    State(state): State<AppState>,
+    Path(job_id): Path<String>,
+) -> impl IntoResponse {
+    let backend = backend_from(&state);
+    let rx = backend.notifier.subscribe(&job_id).await;
+    let stream = tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|result| match result {
+        Ok(event) => {
+            let data = serde_json::to_string(&event)
+                .unwrap_or_else(|_| r#"{"error":"serialize"}"#.to_string());
+            let sse_event = Event::default()
+                .event(event.status.to_string())
+                .data(data);
+            Some(Ok::<_, std::convert::Infallible>(sse_event))
+        }
+        Err(_) => {
+            tracing::warn!("SSE subscriber lagged or channel closed");
+            None
+        }
+    });
+
+    Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(std::time::Duration::from_secs(15))
+            .text("ping"),
+    )
 }
 
 async fn health_check() -> impl IntoResponse {

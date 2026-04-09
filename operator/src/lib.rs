@@ -197,9 +197,18 @@ impl BackgroundService for TrainingServer {
             register_coordinator(coord.clone());
 
             // Build core AppState with billing support
+            let notifier = Arc::new(blueprint_webhooks::notifier::JobNotifier::new(
+                blueprint_webhooks::notifier::NotifierConfig {
+                    signing_secret: std::env::var("WEBHOOK_SIGNING_SECRET")
+                        .unwrap_or_else(|_| String::new()),
+                    ..Default::default()
+                },
+            ));
+
             let backend = TrainingAppBackend {
                 config: config.clone(),
                 coordinator: coord.clone(),
+                notifier,
             };
 
             let state = match AppState::from_config(
