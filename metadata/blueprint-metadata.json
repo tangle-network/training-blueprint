@@ -1,0 +1,205 @@
+{
+  "name": "Training Blueprint",
+  "description": "Permissionless multi-operator model training on Tangle using DeMo for communication-efficient synchronization, checkpointing, and verification.",
+  "author": "Tangle Network",
+  "category": "AI Training",
+  "image": null,
+  "website": "https://tangle.tools",
+  "codeRepository": "https://github.com/tangle-network/training-blueprint",
+  "docs": "https://github.com/tangle-network/training-blueprint#readme",
+  "integrity": null,
+  "blueprintUi": {
+    "displayName": "Distributed Training",
+    "description": "Coordinate multi-operator training runs with epoch barriers, checkpoint status, compressed momentum sync, and verification posture.",
+    "requestedSlug": "distributed-training",
+    "publisher": {
+      "name": "Tangle Network",
+      "namespace": "tangle",
+      "verified": false
+    },
+    "resources": {
+      "serviceLabel": "Training run",
+      "itemLabel": "Epoch",
+      "itemRoute": "runs"
+    },
+    "surfaces": [
+      "generic-overview",
+      "service-explorer",
+      "actions-panel",
+      "resources",
+      "metrics",
+      "permissions"
+    ],
+    "theme": {
+      "badgeLabel": "DeMo training",
+      "accentColor": "#4338CA",
+      "secondaryColor": "#1E1B4B",
+      "icon": "graph"
+    },
+    "overviewCards": [
+      {
+        "id": "demo-compression",
+        "kind": "callout",
+        "title": "10,000\u00d7 communication via DeMo",
+        "description": "Distributed momentum optimization with DCT sparsification reduces gossip overhead from ~10GB to ~100KB per sync \u2014 efficient multi-operator training across permissionless operators.",
+        "tone": "success"
+      },
+      {
+        "id": "supported-methods",
+        "kind": "checklist",
+        "title": "Training methods",
+        "items": [
+          "SFT (supervised fine-tuning)",
+          "DPO (direct preference optimization)",
+          "GRPO (group relative policy optimization)",
+          "Pretrain (continued pre-training)"
+        ],
+        "tone": "info"
+      },
+      {
+        "id": "operator-coordination",
+        "kind": "stat",
+        "title": "Epoch-synchronized participants",
+        "description": "Operators join and leave at epoch boundaries; Tangle chain enforces payment and slashing.",
+        "value": "Permissionless",
+        "tone": "neutral"
+      }
+    ],
+    "actions": [
+      {
+        "id": "create-training-job",
+        "label": "Start training run",
+        "description": "Provision a distributed training job with base model, dataset, method, and epoch count. Operators sync momentum every K steps using compressed DCT buffers.",
+        "target": "service",
+        "submitLabel": "Start run",
+        "fields": [
+          {
+            "key": "base_model",
+            "label": "Base model",
+            "input": "text",
+            "required": true,
+            "placeholder": "meta-llama/Llama-3.1-8B"
+          },
+          {
+            "key": "method",
+            "label": "Training method",
+            "input": "select",
+            "required": true,
+            "options": [
+              {
+                "label": "SFT",
+                "value": "sft"
+              },
+              {
+                "label": "DPO",
+                "value": "dpo"
+              },
+              {
+                "label": "GRPO",
+                "value": "grpo"
+              },
+              {
+                "label": "Pretrain",
+                "value": "pretrain"
+              }
+            ]
+          },
+          {
+            "key": "total_epochs",
+            "label": "Total epochs",
+            "input": "number",
+            "required": true,
+            "placeholder": "3"
+          }
+        ]
+      },
+      {
+        "id": "submit-checkpoint",
+        "label": "Submit checkpoint",
+        "description": "Record a checkpoint URI (IPFS/S3) and hash attestation. On-chain verification ensures reproducibility and enables recovery from operator failures.",
+        "target": "resource",
+        "submitLabel": "Submit",
+        "fields": [
+          {
+            "key": "checkpoint_uri",
+            "label": "Checkpoint URI",
+            "input": "text",
+            "required": true,
+            "placeholder": "ipfs://Qm... or s3://bucket/path"
+          },
+          {
+            "key": "checkpoint_hash",
+            "label": "SHA-256 hash",
+            "input": "text",
+            "required": true,
+            "placeholder": "0x..."
+          },
+          {
+            "key": "epoch_number",
+            "label": "Epoch",
+            "input": "number",
+            "required": true,
+            "placeholder": "1"
+          }
+        ]
+      }
+    ],
+    "resourceViews": [
+      {
+        "id": "epoch-ledger",
+        "title": "Epoch ledger",
+        "kind": "timeline",
+        "target": "resource",
+        "defaultSort": "epoch:asc",
+        "columns": [
+          {
+            "key": "epoch",
+            "label": "Epoch",
+            "emphasis": true
+          },
+          {
+            "key": "participants",
+            "label": "Participants"
+          },
+          {
+            "key": "checkpoint",
+            "label": "Checkpoint"
+          },
+          {
+            "key": "verification",
+            "label": "Verification"
+          }
+        ]
+      }
+    ],
+    "modules": [
+      {
+        "module": "metrics-overview",
+        "slot": "overview",
+        "metricKeys": [
+          "steps_completed",
+          "loss_scaled",
+          "gpu_utilization"
+        ]
+      },
+      {
+        "module": "permissions-matrix",
+        "slot": "sidebar",
+        "eventKinds": [
+          "operator_joined",
+          "epoch_completed",
+          "slashing_event"
+        ]
+      },
+      {
+        "module": "resource-events",
+        "slot": "resources",
+        "eventKinds": [
+          "checkpoint_submitted",
+          "momentum_synced",
+          "verification_passed"
+        ]
+      }
+    ]
+  }
+}
