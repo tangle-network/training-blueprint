@@ -21,6 +21,6 @@ integrity = "3874463846ab995a6a9a88412913cacec6144f7605daa1af57c2d8bf3f210b13"
 
 [[dependencies]]
 name = "tnt-core"
-version = "0.10.4"
+version = "0.13.0"
 git = "https://github.com/tangle-network/tnt-core.git"
-rev = "74c67d91dc19fadadfae6eafdc80c5e9f7c11caf"
+rev = "5201cf08bbe64238f0533d113840d7280afdaa08"
