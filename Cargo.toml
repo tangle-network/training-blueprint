@@ -9,7 +9,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/tangle-network/training-blueprint"
 
 [workspace.dependencies]
-blueprint-sdk = { git = "https://github.com/tangle-network/blueprint", branch = "main", features = ["std", "tangle", "macros"] }
+blueprint-sdk = { version = "0.2.0-alpha.5", features = ["std", "tangle", "macros"] }
 blueprint-networking = { git = "https://github.com/tangle-network/blueprint", branch = "main" }
 alloy = { version = "1", features = ["full", "signer-local", "provider-http"] }
 alloy-sol-types = "1"
