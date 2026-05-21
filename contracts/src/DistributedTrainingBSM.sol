@@ -1,10 +1,15 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.26;
+
+import { BlueprintServiceManagerBase } from "tnt-core/BlueprintServiceManagerBase.sol";
 
 /// @title DistributedTrainingBSM
 /// @notice Blueprint Service Manager for multi-operator distributed model training.
 /// Manages training jobs, operator lifecycle, checkpoint submission, and payment distribution.
-contract DistributedTrainingBSM {
+/// @dev Inherits {BlueprintServiceManagerBase} so Tangle's `onBlueprintCreated`,
+///      `onRegister`, `onJobCall`, etc. dispatch to safe defaults; the training-specific
+///      surface only overrides `onRegister` to capture operator hardware capabilities.
+contract DistributedTrainingBSM is BlueprintServiceManagerBase {
     // --- Structs ---
 
     struct TrainingJob {
@@ -48,8 +53,9 @@ contract DistributedTrainingBSM {
 
     // --- State ---
 
+    /// @notice Local admin (deployer). Separate from {BlueprintServiceManagerBase.blueprintOwner},
+    ///         which is bound by Tangle when `onBlueprintCreated` fires.
     address public owner;
-    address public tangleCore;
 
     uint64 public nextJobId;
     mapping(uint64 => TrainingJob) public jobs;
@@ -75,26 +81,71 @@ contract DistributedTrainingBSM {
         _;
     }
 
-    modifier onlyFromTangle() {
-        require(msg.sender == tangleCore || msg.sender == owner, "only from tangle");
+    /// @notice Allows either Tangle or the local admin (owner). Used by post-registration
+    ///         maintenance entry points such as {slashOperator} and {updateContribution}.
+    /// @dev    {BlueprintServiceManagerBase.onlyFromTangle} is strictly tangle-only; this
+    ///         modifier preserves the previous "tangle OR owner" surface for ops tooling.
+    modifier onlyTangleOrOwner() {
+        require(msg.sender == tangleCore || msg.sender == owner, "only tangle or owner");
         _;
     }
 
     // --- Constructor ---
 
+    /// @param _tangleCore Tangle protocol address. If non-zero, this binds the BSM to that
+    ///        Tangle deployment up-front (so Tangle's own `onBlueprintCreated` call during
+    ///        `createBlueprint` is a no-op rebind to the same address; see
+    ///        {onBlueprintCreated} below). Passing `address(0)` defers binding to Tangle.
     constructor(address _tangleCore) {
         owner = msg.sender;
         tangleCore = _tangleCore;
         nextJobId = 1;
     }
 
+    // --- Blueprint Lifecycle ---
+
+    /// @notice Tangle dispatches this from `createBlueprint`. The base implementation reverts
+    ///         with `AlreadyInitialized` if `tangleCore` is already set, which would happen
+    ///         here because the constructor pre-binds it. Override to be idempotent: accept
+    ///         a rebind to the same Tangle, record `blueprintId` + `blueprintOwner`.
+    /// @dev    Without this override, Tangle's hook call reverts and `createBlueprint` aborts
+    ///         with `ManagerRejected(manager)` (selector 0x71cc0e9a).
+    function onBlueprintCreated(
+        uint64 _blueprintId,
+        address _owner,
+        address _tangleCore
+    )
+        external
+        override
+    {
+        // First-bind path: constructor was given address(0), let Tangle bind itself.
+        if (tangleCore == address(0)) {
+            tangleCore = _tangleCore;
+        } else {
+            // Pre-bound path: only accept the rebind if Tangle matches what the deployer set.
+            require(_tangleCore == tangleCore, "tangle mismatch");
+        }
+
+        blueprintId = _blueprintId;
+        blueprintOwner = _owner;
+    }
+
     // --- Operator Registration ---
 
-    /// @notice Register operator capabilities. Called during Blueprint onRegister.
+    /// @notice Capture operator hardware capabilities. Tangle invokes this when an operator
+    ///         registers against the blueprint.
+    /// @dev    Overrides {BlueprintServiceManagerBase.onRegister}; must remain `external payable`
+    ///         and use the base `onlyFromTangle` modifier (tangle-only) to keep the
+    ///         {IBlueprintServiceManager} ABI intact.
     function onRegister(
         address operator,
         bytes calldata registrationData
-    ) external onlyFromTangle {
+    )
+        external
+        payable
+        override
+        onlyFromTangle
+    {
         (
             uint32 gpuCount,
             uint32 totalVramMib,
@@ -247,7 +298,7 @@ contract DistributedTrainingBSM {
         uint64 jobId,
         address operator,
         string calldata reason
-    ) external onlyFromTangle {
+    ) external onlyTangleOrOwner {
         require(_isOperatorInJob(jobId, operator), "not in job");
         contributions[jobId][operator].slashed = true;
         emit OperatorSlashed(jobId, operator, reason);
@@ -259,7 +310,7 @@ contract DistributedTrainingBSM {
         address operator,
         uint64 gpuMinutes,
         uint64 steps
-    ) external onlyFromTangle {
+    ) external onlyTangleOrOwner {
         contributions[jobId][operator].gpuMinutesContributed = gpuMinutes;
         contributions[jobId][operator].stepsCompleted = steps;
     }
