@@ -21,6 +21,7 @@ integrity = "3874463846ab995a6a9a88412913cacec6144f7605daa1af57c2d8bf3f210b13"
 
 [[dependencies]]
 name = "tnt-core"
-version = "0.10.4"
-git = "https://github.com/tangle-network/tnt-core.git"
-rev = "74c67d91dc19fadadfae6eafdc80c5e9f7c11caf"
+version = "0.13.0"
+url = "https://soldeer-revisions.s3.amazonaws.com/tnt-core/0_13_0_08-05-2026_21:58:28_tnt-core.zip"
+checksum = "b800ed4ca62ef85a7db2cbfcbfb0649459c5dfe714851581ef3069cccb595391"
+integrity = "0d1d5a9a10d694db8c3dd35e7ece816427606f9d0de77ebe01e7789a3d1fd558"
