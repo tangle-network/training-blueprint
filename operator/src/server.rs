@@ -22,9 +22,9 @@ use axum::{
     Json, Router as HttpRouter,
 };
 use blueprint_webhooks::notifier::{JobEvent, JobNotifier, JobStatus as WebhookJobStatus};
-use tokio_stream::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
+use tokio_stream::StreamExt;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
@@ -131,11 +131,10 @@ async fn create_job(
     // Each epoch is ~1 GPU-hour on average. Actual cost settled on completion.
     let estimated_gpu_hours = req.total_epochs as u64;
     let estimated_cost = estimated_gpu_hours * backend.config.training.price_per_gpu_hour;
-    let (spend_auth, preauth) =
-        match billing_gate(&state, &headers, None, estimated_cost).await {
-            Ok(v) => v,
-            Err(resp) => return resp.into_response(),
-        };
+    let (spend_auth, preauth) = match billing_gate(&state, &headers, None, estimated_cost).await {
+        Ok(v) => v,
+        Err(resp) => return resp.into_response(),
+    };
 
     let start_time = std::time::Instant::now();
     let notifier = backend.notifier.clone();
@@ -169,16 +168,11 @@ async fn create_job(
         Ok(result) => {
             // Settle billing based on actual compute time
             let compute_secs = start_time.elapsed().as_secs();
-            let actual_gpu_hours = (compute_secs + 3599) / 3600; // round up
+            let actual_gpu_hours = compute_secs.div_ceil(3600); // round up
             let actual_cost = actual_gpu_hours * backend.config.training.price_per_gpu_hour;
             if let Some(ref auth) = spend_auth {
-                if let Err(e) = settle_billing(
-                    &state.billing,
-                    auth,
-                    preauth.unwrap_or(0),
-                    actual_cost,
-                )
-                .await
+                if let Err(e) =
+                    settle_billing(&state.billing, auth, preauth.unwrap_or(0), actual_cost).await
                 {
                     tracing::error!(error = %e, "billing settlement failed");
                 }
@@ -305,10 +299,7 @@ async fn get_checkpoint(
         Ok(Some(path)) => match tokio::fs::read(&path).await {
             Ok(data) => (
                 StatusCode::OK,
-                [(
-                    axum::http::header::CONTENT_TYPE,
-                    "application/octet-stream",
-                )],
+                [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
                 data,
             )
                 .into_response(),
@@ -343,20 +334,19 @@ async fn sse_handler(
 ) -> impl IntoResponse {
     let backend = backend_from(&state);
     let rx = backend.notifier.subscribe(&job_id).await;
-    let stream = tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|result| match result {
-        Ok(event) => {
-            let data = serde_json::to_string(&event)
-                .unwrap_or_else(|_| r#"{"error":"serialize"}"#.to_string());
-            let sse_event = Event::default()
-                .event(event.status.to_string())
-                .data(data);
-            Some(Ok::<_, std::convert::Infallible>(sse_event))
-        }
-        Err(_) => {
-            tracing::warn!("SSE subscriber lagged or channel closed");
-            None
-        }
-    });
+    let stream =
+        tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|result| match result {
+            Ok(event) => {
+                let data = serde_json::to_string(&event)
+                    .unwrap_or_else(|_| r#"{"error":"serialize"}"#.to_string());
+                let sse_event = Event::default().event(event.status.to_string()).data(data);
+                Some(Ok::<_, std::convert::Infallible>(sse_event))
+            }
+            Err(_) => {
+                tracing::warn!("SSE subscriber lagged or channel closed");
+                None
+            }
+        });
 
     Sse::new(stream).keep_alive(
         KeepAlive::new()

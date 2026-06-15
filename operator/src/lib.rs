@@ -2,6 +2,7 @@ pub mod checkpoint;
 pub mod config;
 pub mod coordinator;
 pub mod demo;
+pub mod eval_gate;
 pub mod network;
 pub mod qos;
 pub mod server;
@@ -45,6 +46,15 @@ sol! {
         bytes32 finalCheckpointHash;
         uint64 totalSteps;
         uint32 finalEpoch;
+        // Held-out evaluation gate. Reward attaches to certified improvement, not
+        // to the checkpoint hash alone. Improvement and its CI lower bound are
+        // fixed-point scaled by 1e4 (basis points) and signed (a regression is
+        // negative). The chain certifies payout only when `heldOutCertified` is
+        // true, i.e. the bootstrap lower bound cleared the protocol margin.
+        bool heldOutCertified;
+        int64 improvementBps;
+        int64 ciLowerBoundBps;
+        uint32 heldOutExamples;
     }
 
     #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -81,6 +91,9 @@ pub const LEAVE_JOB: u8 = 2;
 static COORDINATOR: blueprint_sdk::std::sync::OnceLock<Arc<TrainingCoordinator>> =
     blueprint_sdk::std::sync::OnceLock::new();
 
+// `RunnerError` is the SDK's job-handler error type and is intentionally large;
+// boxing it here would diverge from every other handler signature in the crate.
+#[allow(clippy::result_large_err)]
 fn get_coordinator() -> Result<&'static Arc<TrainingCoordinator>, RunnerError> {
     COORDINATOR
         .get()
@@ -135,11 +148,20 @@ pub async fn handle_training_job(
         .await
         .map_err(|e| RunnerError::Other(format!("training job failed: {e}").into()))?;
 
+    // Scale the held-out improvement and its CI lower bound to signed basis points
+    // (1e4) for the integer-only on-chain ABI. Saturating cast keeps absurd values
+    // from wrapping; certification itself is driven by the bool, not the magnitude.
+    let to_bps = |v: f64| -> i64 { (v * 10_000.0).round() as i64 };
+
     Ok(TangleResult(TrainingJobResult {
         jobId: request.jobId,
         finalCheckpointHash: alloy::primitives::FixedBytes(result.checkpoint_hash),
         totalSteps: result.total_steps,
         finalEpoch: result.final_epoch,
+        heldOutCertified: result.certificate.certified,
+        improvementBps: to_bps(result.certificate.mean_improvement),
+        ciLowerBoundBps: to_bps(result.certificate.ci_lower_bound),
+        heldOutExamples: result.certificate.n_examples as u32,
     }))
 }
 

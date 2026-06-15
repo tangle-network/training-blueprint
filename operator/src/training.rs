@@ -10,6 +10,7 @@ use ndarray::Array2;
 use serde::{Deserialize, Serialize};
 
 use crate::config::TrainingConfig;
+use crate::eval_gate::HeldOutLosses;
 
 /// Result returned when a training job completes.
 pub struct TrainingResult {
@@ -18,15 +19,15 @@ pub struct TrainingResult {
     pub final_epoch: u32,
 }
 
-/// Training backend interface.
-///
-/// Any local training engine must support these operations:
-/// - init_model(base_model) — initialize or load a base model
-/// - train_step(batch_index) -> gradients — execute one training step
-/// - get_momentum() -> tensors — get current momentum buffers for DeMo sync
-/// - apply_momentum_update(update) — apply a DeMo aggregated momentum update
-/// - save_state() -> bytes — serialize model + optimizer state
-/// - load_state(checkpoint) — restore from checkpoint
+// Training backend interface.
+//
+// Any local training engine must support these operations:
+// - init_model(base_model) — initialize or load a base model
+// - train_step(batch_index) -> gradients — execute one training step
+// - get_momentum() -> tensors — get current momentum buffers for DeMo sync
+// - apply_momentum_update(update) — apply a DeMo aggregated momentum update
+// - save_state() -> bytes — serialize model + optimizer state
+// - load_state(checkpoint) — restore from checkpoint
 
 /// Local training backend that calls a Python training server over HTTP.
 ///
@@ -159,6 +160,30 @@ impl LocalTrainingBackend {
         }
 
         Ok(resp.bytes().await?.to_vec())
+    }
+
+    /// Score the base model and the current (candidate) checkpoint on the private
+    /// held-out validation split, returning per-example losses for both. The
+    /// protocol's eval gate consumes these to certify that the candidate actually
+    /// improved on data no operator trained on.
+    ///
+    /// POST /eval_held_out { "base_model": "..." } ->
+    ///   { "base": [f64, ...], "candidate": [f64, ...] }
+    pub async fn held_out_losses(&self, base_model: &str) -> anyhow::Result<HeldOutLosses> {
+        let resp = self
+            .client
+            .post(format!("{}/eval_held_out", self.endpoint))
+            .json(&serde_json::json!({ "base_model": base_model }))
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("held_out_losses failed: {body}");
+        }
+
+        let body: HeldOutLossResponse = resp.json().await?;
+        Ok(HeldOutLosses::new(body.base, body.candidate))
     }
 
     pub async fn load_state(&self, checkpoint: &[u8]) -> anyhow::Result<()> {
@@ -312,4 +337,12 @@ struct StepResponse {
 #[derive(Debug, Serialize, Deserialize)]
 struct MomentumResponse {
     momentum: Vec<TensorPayload>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct HeldOutLossResponse {
+    /// Per-example loss of the base/reference model on the held-out split.
+    base: Vec<f64>,
+    /// Per-example loss of the candidate checkpoint on the same held-out examples.
+    candidate: Vec<f64>,
 }

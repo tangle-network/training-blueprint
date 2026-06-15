@@ -10,7 +10,7 @@
 
 use blueprint_sdk::std::sync::Arc;
 
-use ndarray::{Array1, Array2, Axis};
+use ndarray::Array2;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
@@ -106,8 +106,7 @@ pub struct DemoOptimizer {
 impl DemoOptimizer {
     pub fn new(shapes: &[(usize, usize)], lr: f32, sync_interval: u64, top_k_ratio: f32) -> Self {
         let states: Vec<AdamWState> = shapes.iter().map(|&s| AdamWState::new(s, lr)).collect();
-        let momentum_deltas: Vec<Array2<f32>> =
-            shapes.iter().map(|&s| Array2::zeros(s)).collect();
+        let momentum_deltas: Vec<Array2<f32>> = shapes.iter().map(|&s| Array2::zeros(s)).collect();
 
         Self {
             states,
@@ -311,7 +310,11 @@ pub fn top_k_sparsify(tensor: &Array2<f32>, ratio: f32) -> (Vec<u32>, Vec<f32>) 
         .map(|&(idx, _)| (idx, flat[idx as usize]))
         .collect();
 
-    top_k.sort_by(|a, b| b.1.abs().partial_cmp(&a.1.abs()).unwrap_or(std::cmp::Ordering::Equal));
+    top_k.sort_by(|a, b| {
+        b.1.abs()
+            .partial_cmp(&a.1.abs())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     let indices: Vec<u32> = top_k.iter().map(|&(i, _)| i).collect();
     let values: Vec<f32> = top_k.iter().map(|&(_, v)| v).collect();
@@ -388,8 +391,8 @@ mod tests {
         let mut opt = DemoOptimizer::new(&[(4, 4)], 0.001, 3, 0.1);
         let grad = Array2::ones((4, 4));
 
-        assert!(!opt.local_step(&[grad.clone()]));
-        assert!(!opt.local_step(&[grad.clone()]));
+        assert!(!opt.local_step(std::slice::from_ref(&grad)));
+        assert!(!opt.local_step(std::slice::from_ref(&grad)));
         assert!(opt.local_step(&[grad])); // third step triggers sync
     }
 

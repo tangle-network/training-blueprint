@@ -137,8 +137,8 @@ pub fn verify_contributions(proofs: &[StateTransitionProof]) -> VerificationResu
             continue;
         }
 
-        let mean: f32 =
-            proof.gradient_norm_samples.iter().sum::<f32>() / proof.gradient_norm_samples.len() as f32;
+        let mean: f32 = proof.gradient_norm_samples.iter().sum::<f32>()
+            / proof.gradient_norm_samples.len() as f32;
 
         if mean == 0.0 {
             suspicious.push(proof.operator.clone());

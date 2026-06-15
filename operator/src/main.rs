@@ -7,12 +7,14 @@ use blueprint_sdk::runner::tangle::config::TangleConfig;
 use blueprint_sdk::runner::BlueprintRunner;
 use blueprint_sdk::tangle::{TangleConsumer, TangleProducer};
 
-use blueprint_crypto::KeyType;
 use blueprint_crypto::k256::K256Ecdsa;
-use blueprint_networking::service::{AllowedKeys, NetworkCommandMessage, NetworkConfig as NetConfig};
+use blueprint_crypto::KeyType;
+use blueprint_networking::service::{
+    AllowedKeys, NetworkCommandMessage, NetworkConfig as NetConfig,
+};
 
 use distributed_training::config::OperatorConfig;
-use distributed_training::network::{self, TrainingNetwork, MOMENTUM_TOPIC, COORDINATION_TOPIC};
+use distributed_training::network::{self, TrainingNetwork, COORDINATION_TOPIC, MOMENTUM_TOPIC};
 use distributed_training::TrainingServer;
 
 fn setup_log() {
@@ -92,7 +94,9 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
         instance_id: "1.0.0".to_string(),
         instance_key_pair,
         local_key: local_key.clone(),
-        listen_addr: listen_addr.parse().unwrap_or_else(|_| "/ip4/0.0.0.0/tcp/0".parse().unwrap()),
+        listen_addr: listen_addr
+            .parse()
+            .unwrap_or_else(|_| "/ip4/0.0.0.0/tcp/0".parse().unwrap()),
         target_peer_count: 10,
         bootstrap_peers: bootstrap_peers
             .iter()
@@ -108,9 +112,11 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
         net_config,
         AllowedKeys::default(), // empty set — will be updated as peers register
         allowed_keys_rx,
-    ).map_err(|e| blueprint_sdk::Error::Other(format!("networking init failed: {e}")))?;
+    )
+    .map_err(|e| blueprint_sdk::Error::Other(format!("networking init failed: {e}")))?;
 
-    let peer_id = net_service.get_listen_addr()
+    let peer_id = net_service
+        .get_listen_addr()
         .map(|a| a.to_string())
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
@@ -132,13 +138,14 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
     // Spawn gossip event loop — routes incoming messages to TrainingNetwork
     let net_clone = training_network.clone();
     tokio::spawn(async move {
-        network::run_gossip_event_loop(
-            move || handle.next_protocol_message(),
-            net_clone,
-        ).await;
+        network::run_gossip_event_loop(move || handle.next_protocol_message(), net_clone).await;
     });
 
-    tracing::info!("gossip event loop started on topics: {}, {}", MOMENTUM_TOPIC, COORDINATION_TOPIC);
+    tracing::info!(
+        "gossip event loop started on topics: {}, {}",
+        MOMENTUM_TOPIC,
+        COORDINATION_TOPIC
+    );
 
     // --- Tangle protocol setup ---
     let tangle_client = env

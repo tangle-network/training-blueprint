@@ -8,7 +8,6 @@ use std::time::Duration;
 use tokio::time::timeout;
 
 use blueprint_crypto::k256::K256Ecdsa;
-use blueprint_networking::service::AllowedKeys;
 use blueprint_networking::test_utils::{create_whitelisted_nodes, wait_for_all_handshakes};
 
 use distributed_training::demo::SparseUpdate;
@@ -38,10 +37,13 @@ async fn test_real_gossip_momentum_sync() {
         .collect();
 
     // Wait for handshake between nodes
-    let mut handle_refs: Vec<&mut _> = handles.iter_mut().collect();
-    timeout(TEST_TIMEOUT, wait_for_all_handshakes(&handle_refs, Duration::from_secs(10)))
-        .await
-        .expect("handshake should complete within timeout");
+    let handle_refs: Vec<&mut _> = handles.iter_mut().collect();
+    timeout(
+        TEST_TIMEOUT,
+        wait_for_all_handshakes(&handle_refs, Duration::from_secs(10)),
+    )
+    .await
+    .expect("handshake should complete within timeout");
 
     println!("Both nodes connected via libp2p");
 
@@ -104,7 +106,10 @@ async fn test_real_gossip_momentum_sync() {
                 serde_json::from_slice(&msg.payload).expect("deserialize should work");
             assert_eq!(decoded.indices, update.indices);
             assert_eq!(decoded.step, 500);
-            println!("Momentum update verified: step={}, indices={:?}", decoded.step, decoded.indices);
+            println!(
+                "Momentum update verified: step={}, indices={:?}",
+                decoded.step, decoded.indices
+            );
         }
         Err(_) => {
             // Gossip delivery can be unreliable in tests with only 2 nodes
