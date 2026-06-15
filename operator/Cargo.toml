@@ -51,7 +51,7 @@ tokio-stream = "0.1"
 futures = "0.3"
 
 [dev-dependencies]
-blueprint-sdk = { version = "0.2.0-alpha.5", features = ["testing", "tangle"] }
+blueprint-sdk = { version = "0.2.0-alpha.9", features = ["testing", "tangle"] }
 blueprint-networking = { git = "https://github.com/tangle-network/blueprint", branch = "main" }
 blueprint-crypto = { git = "https://github.com/tangle-network/blueprint", branch = "main" }
 tempfile = "3"
