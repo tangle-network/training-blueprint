@@ -77,8 +77,11 @@ impl Default for EvalGateConfig {
     }
 }
 
-/// Certificate produced by the gate. Carried into the on-chain job result so the
-/// chain pays for certified held-out improvement rather than a bare checkpoint.
+/// Certificate produced by the gate. Its `certified` verdict is carried into the
+/// on-chain job result and recorded per operator through the authenticated
+/// `updateContribution`/`recordCertification` path; `DistributedTrainingBSM.distributePayment`
+/// then pays ZERO to any operator whose recorded contribution is not certified, so
+/// payout follows certified held-out improvement rather than a bare checkpoint.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EvalCertificate {
     /// Whether the candidate cleared the held-out improvement bar.
@@ -172,8 +175,9 @@ pub fn certify(losses: &HeldOutLosses, config: &EvalGateConfig) -> EvalCertifica
 }
 
 /// Build an uncertified certificate (fail-closed) with a reason. Used when the
-/// held-out split cannot be scored, so the chain withholds the reward rather than
-/// paying on an unverified claim.
+/// held-out split cannot be scored: recorded on-chain as not-certified, so
+/// `distributePayment` pays ZERO for that operator rather than paying on an
+/// unverified claim.
 pub fn uncertified(reason: &str) -> EvalCertificate {
     EvalCertificate {
         certified: false,
@@ -341,6 +345,12 @@ mod tests {
         assert!(
             cert.ci_lower_bound < cert.mean_improvement,
             "lower bound must sit below the noisy mean"
+        );
+        // The whole point of gating on the lower bound: a noisy split whose mean
+        // clears the margin must still be rejected, so no false certificate is minted.
+        assert!(
+            !cert.certified,
+            "noisy split must not be certified even though the mean clears the margin"
         );
     }
 

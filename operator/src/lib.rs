@@ -46,11 +46,13 @@ sol! {
         bytes32 finalCheckpointHash;
         uint64 totalSteps;
         uint32 finalEpoch;
-        // Held-out evaluation gate. Reward attaches to certified improvement, not
-        // to the checkpoint hash alone. Improvement and its CI lower bound are
+        // Held-out evaluation gate. Improvement and its CI lower bound are
         // fixed-point scaled by 1e4 (basis points) and signed (a regression is
-        // negative). The chain certifies payout only when `heldOutCertified` is
-        // true, i.e. the bootstrap lower bound cleared the protocol margin.
+        // negative). `heldOutCertified` is the off-chain gate's verdict: true only
+        // when the bootstrap lower bound cleared the protocol margin. The legitimate
+        // result submitter records this per operator on-chain via the authenticated
+        // `updateContribution`/`recordCertification` path, and `distributePayment`
+        // pays ZERO to any operator whose recorded contribution is not certified.
         bool heldOutCertified;
         int64 improvementBps;
         int64 ciLowerBoundBps;

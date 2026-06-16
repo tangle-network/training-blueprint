@@ -452,7 +452,9 @@ impl TrainingCoordinator {
         // on the private held-out split and certify the improvement before the
         // result goes on-chain. A checkpoint that does not measurably beat the base
         // model (bootstrap lower bound below the protocol margin) is reported as
-        // uncertified so the chain withholds the contribution reward.
+        // uncertified; the legitimate result submitter records that verdict per
+        // operator via the authenticated `updateContribution`/`recordCertification`
+        // path, and `distributePayment` pays ZERO for an uncertified contribution.
         let certificate = self.certify_final_checkpoint(&base_model).await;
 
         // Mark completed
