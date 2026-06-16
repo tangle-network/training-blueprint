@@ -16,7 +16,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::{
         sse::{Event, KeepAlive, Sse},
-        IntoResponse,
+        IntoResponse, Response,
     },
     routing::{get, post},
     Json, Router as HttpRouter,
@@ -331,9 +331,11 @@ async fn get_checkpoint(
 async fn sse_handler(
     State(state): State<AppState>,
     Path(job_id): Path<String>,
-) -> impl IntoResponse {
+) -> Response {
     let backend = backend_from(&state);
-    let rx = backend.notifier.subscribe(&job_id).await;
+    let Some(rx) = backend.notifier.subscribe(&job_id).await else {
+        return (StatusCode::NOT_FOUND, "job not found or not notifiable").into_response();
+    };
     let stream =
         tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|result| match result {
             Ok(event) => {
@@ -348,11 +350,13 @@ async fn sse_handler(
             }
         });
 
-    Sse::new(stream).keep_alive(
-        KeepAlive::new()
-            .interval(std::time::Duration::from_secs(15))
-            .text("ping"),
-    )
+    Sse::new(stream)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(std::time::Duration::from_secs(15))
+                .text("ping"),
+        )
+        .into_response()
 }
 
 async fn health_check() -> impl IntoResponse {
