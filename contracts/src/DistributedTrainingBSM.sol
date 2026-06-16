@@ -84,9 +84,7 @@ contract DistributedTrainingBSM is BlueprintServiceManagerBase {
     event PaymentDistributed(uint64 indexed jobId, address indexed operator, uint256 amount);
     event OperatorRegistered(address indexed operator, uint32 gpuCount, uint32 vramMib);
     event OperatorSlashed(uint64 indexed jobId, address indexed operator, string reason);
-    event ContributionCertified(
-        uint64 indexed jobId, address indexed operator, bool certified, int64 improvementBps
-    );
+    event ContributionCertified(uint64 indexed jobId, address indexed operator, bool certified, int64 improvementBps);
 
     // --- Modifiers ---
 
@@ -124,14 +122,7 @@ contract DistributedTrainingBSM is BlueprintServiceManagerBase {
     ///         a rebind to the same Tangle, record `blueprintId` + `blueprintOwner`.
     /// @dev    Without this override, Tangle's hook call reverts and `createBlueprint` aborts
     ///         with `ManagerRejected(manager)` (selector 0x71cc0e9a).
-    function onBlueprintCreated(
-        uint64 _blueprintId,
-        address _owner,
-        address _tangleCore
-    )
-        external
-        override
-    {
+    function onBlueprintCreated(uint64 _blueprintId, address _owner, address _tangleCore) external override {
         // First-bind path: constructor was given address(0), let Tangle bind itself.
         if (tangleCore == address(0)) {
             tangleCore = _tangleCore;
@@ -151,15 +142,7 @@ contract DistributedTrainingBSM is BlueprintServiceManagerBase {
     /// @dev    Overrides {BlueprintServiceManagerBase.onRegister}; must remain `external payable`
     ///         and use the base `onlyFromTangle` modifier (tangle-only) to keep the
     ///         {IBlueprintServiceManager} ABI intact.
-    function onRegister(
-        address operator,
-        bytes calldata registrationData
-    )
-        external
-        payable
-        override
-        onlyFromTangle
-    {
+    function onRegister(address operator, bytes calldata registrationData) external payable override onlyFromTangle {
         (
             uint32 gpuCount,
             uint32 totalVramMib,
@@ -191,7 +174,11 @@ contract DistributedTrainingBSM is BlueprintServiceManagerBase {
         uint32 minOperators,
         uint32 maxOperators,
         uint64 syncIntervalSteps
-    ) external payable returns (uint64 jobId) {
+    )
+        external
+        payable
+        returns (uint64 jobId)
+    {
         require(totalEpochs > 0, "epochs must be > 0");
         require(minOperators >= 2, "min 2 operators");
         require(maxOperators >= minOperators, "max >= min operators");
@@ -242,11 +229,7 @@ contract DistributedTrainingBSM is BlueprintServiceManagerBase {
     }
 
     /// @notice Submit a checkpoint hash after a sync round.
-    function submitCheckpoint(
-        uint64 jobId,
-        bytes32 checkpointHash,
-        uint32 epoch
-    ) external {
+    function submitCheckpoint(uint64 jobId, bytes32 checkpointHash, uint32 epoch) external {
         require(_isOperatorInJob(jobId, msg.sender), "not in job");
 
         TrainingJob storage job = jobs[jobId];
@@ -262,11 +245,59 @@ contract DistributedTrainingBSM is BlueprintServiceManagerBase {
         }
     }
 
+    /// @notice Called by Tangle when an operator submits a job result.
+    /// @dev Decodes the blueprint-specific `TrainingJobResult` and persists the
+    ///      held-out certification verdict for the submitting operator. This is the
+    ///      authenticated, operator-agnostic path: the operator cannot mark itself
+    ///      certified because Tangle is the caller. GPU-minutes and step counts are
+    ///      intentionally NOT written here; they are supplied separately by the
+    ///      verified aggregator via {updateContribution} so the two trust domains
+    ///      (result format vs. resource accounting) stay separate.
+    function onJobResult(
+        uint64,
+        uint8,
+        uint64,
+        address operator,
+        bytes calldata,
+        bytes calldata outputs
+    )
+        external
+        payable
+        override
+        onlyFromTangle
+    {
+        // TrainingJobResult ABI:
+        // (uint64 jobId, bytes32 finalCheckpointHash, uint64 totalSteps,
+        //  uint32 finalEpoch, bool heldOutCertified, int64 improvementBps,
+        //  int64 ciLowerBoundBps, uint32 heldOutExamples)
+        (uint64 jobId,,,, bool heldOutCertified, int64 improvementBps,,) =
+            abi.decode(outputs, (uint64, bytes32, uint64, uint32, bool, int64, int64, uint32));
+
+        // The result must correspond to a job this operator actually joined.
+        require(_isOperatorInJob(jobId, operator), "operator not in job");
+
+        // Record only the certification verdict from the decoded result. The off-chain
+        // held-out gate sets `heldOutCertified` to true only when the bootstrap CI lower
+        // bound cleared the protocol margin; {distributePayment} pays ZERO if this flag
+        // is false.
+        OperatorContribution storage c = contributions[jobId][operator];
+        c.heldOutCertified = heldOutCertified;
+        c.improvementBps = improvementBps;
+
+        // Emit the same event as the explicit certification entry points so indexers
+        // have a single event to watch.
+        emit ContributionCertified(jobId, operator, heldOutCertified, improvementBps);
+
+        // Accept the result. Returning (bool) is not part of this interface, but the
+        // base implementation does not return a value either; the hook records state
+        // and proceeds.
+    }
+
     /// @notice Distribute payment proportionally by GPU-minutes after job completion.
     /// @dev An operator is paid only if its contribution cleared the held-out evaluation
     ///      gate ({OperatorContribution.heldOutCertified}), which the authenticated result
-    ///      path ({updateContribution}/{recordCertification}) sets from the decoded
-    ///      `TrainingJobResult`. A non-improving/regressing checkpoint is reported
+    ///      path ({onJobResult}/{updateContribution}/{recordCertification}) sets from the
+    ///      decoded `TrainingJobResult`. A non-improving/regressing checkpoint is reported
     ///      uncertified off-chain, so its operator is excluded from BOTH the denominator
     ///      and the payout loop here and receives ZERO. Certified operators keep the
     ///      existing GPU-minutes/slash pro-rata accounting.
@@ -314,20 +345,16 @@ contract DistributedTrainingBSM is BlueprintServiceManagerBase {
         uint32 minVramMib,
         uint32 minGpuCount,
         uint64 minBandwidthMbps
-    ) external onlyOwner {
-        modelTiers[modelName] = ModelTier({
-            minVramMib: minVramMib,
-            minGpuCount: minGpuCount,
-            minBandwidthMbps: minBandwidthMbps
-        });
+    )
+        external
+        onlyOwner
+    {
+        modelTiers[modelName] =
+            ModelTier({ minVramMib: minVramMib, minGpuCount: minGpuCount, minBandwidthMbps: minBandwidthMbps });
     }
 
     /// @notice Slash an operator for misbehavior (called by verification).
-    function slashOperator(
-        uint64 jobId,
-        address operator,
-        string calldata reason
-    ) external onlyTangleOrOwner {
+    function slashOperator(uint64 jobId, address operator, string calldata reason) external onlyTangleOrOwner {
         require(_isOperatorInJob(jobId, operator), "not in job");
         contributions[jobId][operator].slashed = true;
         emit OperatorSlashed(jobId, operator, reason);
@@ -347,7 +374,10 @@ contract DistributedTrainingBSM is BlueprintServiceManagerBase {
         uint64 steps,
         bool certified,
         int64 improvementBps
-    ) external onlyTangleOrOwner {
+    )
+        external
+        onlyTangleOrOwner
+    {
         OperatorContribution storage c = contributions[jobId][operator];
         c.gpuMinutesContributed = gpuMinutes;
         c.stepsCompleted = steps;
@@ -365,7 +395,10 @@ contract DistributedTrainingBSM is BlueprintServiceManagerBase {
         address operator,
         bool certified,
         int64 improvementBps
-    ) external onlyTangleOrOwner {
+    )
+        external
+        onlyTangleOrOwner
+    {
         OperatorContribution storage c = contributions[jobId][operator];
         c.heldOutCertified = certified;
         c.improvementBps = improvementBps;
@@ -378,21 +411,19 @@ contract DistributedTrainingBSM is BlueprintServiceManagerBase {
         return jobs[jobId].operators;
     }
 
-    function getJobStatus(uint64 jobId) external view returns (
-        uint32 currentEpoch,
-        uint32 totalEpochs,
-        uint256 operatorCount,
-        bool completed,
-        bytes32 latestCheckpoint
-    ) {
+    function getJobStatus(uint64 jobId)
+        external
+        view
+        returns (
+            uint32 currentEpoch,
+            uint32 totalEpochs,
+            uint256 operatorCount,
+            bool completed,
+            bytes32 latestCheckpoint
+        )
+    {
         TrainingJob storage job = jobs[jobId];
-        return (
-            job.currentEpoch,
-            job.totalEpochs,
-            job.operators.length,
-            job.completed,
-            job.latestCheckpointHash
-        );
+        return (job.currentEpoch, job.totalEpochs, job.operators.length, job.completed, job.latestCheckpointHash);
     }
 
     function isOperatorInJob(uint64 jobId, address operator) external view returns (bool) {

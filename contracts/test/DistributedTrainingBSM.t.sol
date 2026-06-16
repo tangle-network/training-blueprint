@@ -14,7 +14,7 @@ contract DistributedTrainingBSMTest is Test {
         bsm = new DistributedTrainingBSM(address(this));
         // Configure a model tier
         // minVramMib=24000, minGpuCount=1, minBandwidthMbps=100
-        bsm.configureModelTier("llama-3.1-8b", 24000, 1, 100);
+        bsm.configureModelTier("llama-3.1-8b", 24_000, 1, 100);
     }
 
     function test_registerOperator() public {
@@ -25,7 +25,8 @@ contract DistributedTrainingBSMTest is Test {
 
     function test_createTrainingJob() public {
         _register(operatorA);
-        uint64 jobId = bsm.createTrainingJob("llama-3.1-8b", "https://data.example.com/train.jsonl", "sft", 10, 2, 8, 500);
+        uint64 jobId =
+            bsm.createTrainingJob("llama-3.1-8b", "https://data.example.com/train.jsonl", "sft", 10, 2, 8, 500);
         assertGt(jobId, 0);
     }
 
@@ -84,8 +85,7 @@ contract DistributedTrainingBSMTest is Test {
         bsm.joinTraining(jobId);
 
         bsm.updateContribution(jobId, operatorA, 10, 100, true, 500);
-        (uint64 gpuMinutes, uint64 steps,,,, bool certified, int64 improvementBps) =
-            bsm.contributions(jobId, operatorA);
+        (uint64 gpuMinutes, uint64 steps,,,, bool certified, int64 improvementBps) = bsm.contributions(jobId, operatorA);
         assertEq(gpuMinutes, 10);
         assertEq(steps, 100);
         assertTrue(certified);
@@ -107,9 +107,8 @@ contract DistributedTrainingBSMTest is Test {
     function test_uncertifiedOperatorGetsZero() public {
         _register(operatorA);
         _register(operatorB);
-        uint64 jobId = bsm.createTrainingJob{ value: 10 ether }(
-            "llama-3.1-8b", "https://data.example.com", "sft", 1, 2, 8, 500
-        );
+        uint64 jobId =
+            bsm.createTrainingJob{ value: 10 ether }("llama-3.1-8b", "https://data.example.com", "sft", 1, 2, 8, 500);
 
         vm.prank(operatorA);
         bsm.joinTraining(jobId);
@@ -141,9 +140,8 @@ contract DistributedTrainingBSMTest is Test {
     function test_certifiedOperatorsSplitProRata() public {
         _register(operatorA);
         _register(operatorB);
-        uint64 jobId = bsm.createTrainingJob{ value: 10 ether }(
-            "llama-3.1-8b", "https://data.example.com", "sft", 1, 2, 8, 500
-        );
+        uint64 jobId =
+            bsm.createTrainingJob{ value: 10 ether }("llama-3.1-8b", "https://data.example.com", "sft", 1, 2, 8, 500);
 
         vm.prank(operatorA);
         bsm.joinTraining(jobId);
@@ -171,9 +169,8 @@ contract DistributedTrainingBSMTest is Test {
     function test_noCertifiedContributionsReverts() public {
         _register(operatorA);
         _register(operatorB);
-        uint64 jobId = bsm.createTrainingJob{ value: 10 ether }(
-            "llama-3.1-8b", "https://data.example.com", "sft", 1, 2, 8, 500
-        );
+        uint64 jobId =
+            bsm.createTrainingJob{ value: 10 ether }("llama-3.1-8b", "https://data.example.com", "sft", 1, 2, 8, 500);
 
         vm.prank(operatorA);
         bsm.joinTraining(jobId);
@@ -211,9 +208,85 @@ contract DistributedTrainingBSMTest is Test {
         bsm.updateContribution(jobId, operatorA, 100, 1000, true, 999);
     }
 
+    /// A certified `TrainingJobResult` submitted through the authenticated Tangle path
+    /// (`onJobResult`) records `heldOutCertified` for the operator, enabling payment.
+    function test_onJobResultRecordsCertification() public {
+        _register(operatorA);
+        _register(operatorB);
+        uint64 jobId =
+            bsm.createTrainingJob{ value: 10 ether }("llama-3.1-8b", "https://data.example.com", "sft", 1, 2, 8, 500);
+
+        vm.prank(operatorA);
+        bsm.joinTraining(jobId);
+        vm.prank(operatorB);
+        bsm.joinTraining(jobId);
+
+        // Encode the same TrainingJobResult shape the operator returns off-chain.
+        bytes memory result = abi.encode(
+            uint64(jobId),
+            bytes32(keccak256("final-checkpoint")),
+            uint64(1000),
+            uint32(1),
+            true, // heldOutCertified
+            int64(800),
+            int64(300),
+            uint32(200)
+        );
+
+        // Tangle (address(this)) submits the result.
+        bsm.onJobResult(jobId, 0, 1, operatorA, "", result);
+
+        (,,,,, bool certifiedA, int64 improvementA) = bsm.contributions(jobId, operatorA);
+        assertTrue(certifiedA);
+        assertEq(improvementA, 800);
+
+        // operatorB did not submit a result, so it remains uncertified.
+        (,,,,, bool certifiedB,) = bsm.contributions(jobId, operatorB);
+        assertFalse(certifiedB);
+
+        // Complete and pay: only operatorA receives the pot.
+        bsm.updateContribution(jobId, operatorA, 100, 1000, true, 800);
+        bsm.updateContribution(jobId, operatorB, 100, 1000, false, 0);
+
+        bytes32 hash = keccak256("final");
+        vm.prank(operatorA);
+        bsm.submitCheckpoint(jobId, hash, 1);
+
+        uint256 balABefore = operatorA.balance;
+        uint256 balBBefore = operatorB.balance;
+
+        bsm.distributePayment(jobId);
+
+        assertEq(operatorA.balance - balABefore, 10 ether);
+        assertEq(operatorB.balance - balBBefore, 0);
+    }
+
+    /// An operator cannot have another operator's result applied to its own contribution:
+    /// the decoded `jobId`/`operator` pair must match a real job membership.
+    function test_onJobResultRevertsForNonMember() public {
+        _register(operatorA);
+        uint64 jobId = _createJob();
+        vm.prank(operatorA);
+        bsm.joinTraining(jobId);
+
+        bytes memory result = abi.encode(
+            uint64(jobId),
+            bytes32(keccak256("final-checkpoint")),
+            uint64(1000),
+            uint32(1),
+            true,
+            int64(800),
+            int64(300),
+            uint32(200)
+        );
+
+        vm.expectRevert(bytes("operator not in job"));
+        bsm.onJobResult(jobId, 0, 1, operatorB, "", result);
+    }
+
     function _register(address op) internal {
         // Register with enough VRAM (24GB meets the 24000 MiB model tier requirement)
-        bsm.onRegister(op, abi.encode(uint32(1), uint32(48000), uint64(1000), "A100", "http://op"));
+        bsm.onRegister(op, abi.encode(uint32(1), uint32(48_000), uint64(1000), "A100", "http://op"));
     }
 
     function _createJob() internal returns (uint64) {
