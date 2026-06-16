@@ -360,20 +360,19 @@ contract DistributedTrainingBSM is BlueprintServiceManagerBase {
         emit OperatorSlashed(jobId, operator, reason);
     }
 
-    /// @notice Update operator contribution metrics and held-out certification in one
-    ///         authenticated write, from the decoded `TrainingJobResult`.
+    /// @notice Update operator contribution metrics (GPU-minutes and steps) without
+    ///         touching the held-out certification. The authenticated certification
+    ///         path ({onJobResult}/{recordCertification}) owns `heldOutCertified`
+    ///         separately so metrics can be updated without accidentally overwriting
+    ///         a certification verdict decoded from a `TrainingJobResult`.
     /// @dev    Authenticated by {onlyTangleOrOwner}: only Tangle (the legitimate result
     ///         submitter) or the local admin may set these. There is deliberately NO
-    ///         path for an operator to mark its own contribution certified. `certified`
-    ///         must be the off-chain held-out gate's `heldOutCertified`; an uncertified
-    ///         contribution is paid ZERO by {distributePayment}.
+    ///         path for an operator to update its own contribution.
     function updateContribution(
         uint64 jobId,
         address operator,
         uint64 gpuMinutes,
-        uint64 steps,
-        bool certified,
-        int64 improvementBps
+        uint64 steps
     )
         external
         onlyTangleOrOwner
@@ -381,9 +380,6 @@ contract DistributedTrainingBSM is BlueprintServiceManagerBase {
         OperatorContribution storage c = contributions[jobId][operator];
         c.gpuMinutesContributed = gpuMinutes;
         c.stepsCompleted = steps;
-        c.heldOutCertified = certified;
-        c.improvementBps = improvementBps;
-        emit ContributionCertified(jobId, operator, certified, improvementBps);
     }
 
     /// @notice Record only the held-out certification for an operator, without

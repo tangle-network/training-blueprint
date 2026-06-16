@@ -84,10 +84,16 @@ contract DistributedTrainingBSMTest is Test {
         vm.prank(operatorB);
         bsm.joinTraining(jobId);
 
-        bsm.updateContribution(jobId, operatorA, 10, 100, true, 500);
+        bsm.updateContribution(jobId, operatorA, 10, 100);
         (uint64 gpuMinutes, uint64 steps,,,, bool certified, int64 improvementBps) = bsm.contributions(jobId, operatorA);
         assertEq(gpuMinutes, 10);
         assertEq(steps, 100);
+        assertFalse(certified);
+        assertEq(improvementBps, 0);
+
+        // Certification is set separately via recordCertification.
+        bsm.recordCertification(jobId, operatorA, true, 500);
+        (,,,,, certified, improvementBps) = bsm.contributions(jobId, operatorA);
         assertTrue(certified);
         assertEq(improvementBps, 500);
     }
@@ -116,9 +122,11 @@ contract DistributedTrainingBSMTest is Test {
         bsm.joinTraining(jobId);
 
         // Both operators did equal GPU-minutes of work...
+        bsm.updateContribution(jobId, operatorA, 100, 1000);
+        bsm.updateContribution(jobId, operatorB, 100, 1000);
         // operatorA's checkpoint cleared the held-out gate; operatorB's did NOT.
-        bsm.updateContribution(jobId, operatorA, 100, 1000, true, 800);
-        bsm.updateContribution(jobId, operatorB, 100, 1000, false, -300);
+        bsm.recordCertification(jobId, operatorA, true, 800);
+        bsm.recordCertification(jobId, operatorB, false, -300);
 
         // Complete the job (epoch >= totalEpochs auto-completes).
         bytes32 hash = keccak256("final");
@@ -148,8 +156,10 @@ contract DistributedTrainingBSMTest is Test {
         vm.prank(operatorB);
         bsm.joinTraining(jobId);
 
-        bsm.updateContribution(jobId, operatorA, 100, 1000, true, 800);
-        bsm.updateContribution(jobId, operatorB, 100, 1000, true, 600);
+        bsm.updateContribution(jobId, operatorA, 100, 1000);
+        bsm.updateContribution(jobId, operatorB, 100, 1000);
+        bsm.recordCertification(jobId, operatorA, true, 800);
+        bsm.recordCertification(jobId, operatorB, true, 600);
 
         bytes32 hash = keccak256("final");
         vm.prank(operatorA);
@@ -177,8 +187,10 @@ contract DistributedTrainingBSMTest is Test {
         vm.prank(operatorB);
         bsm.joinTraining(jobId);
 
-        bsm.updateContribution(jobId, operatorA, 100, 1000, false, -100);
-        bsm.updateContribution(jobId, operatorB, 100, 1000, false, -200);
+        bsm.updateContribution(jobId, operatorA, 100, 1000);
+        bsm.updateContribution(jobId, operatorB, 100, 1000);
+        bsm.recordCertification(jobId, operatorA, false, -100);
+        bsm.recordCertification(jobId, operatorB, false, -200);
 
         bytes32 hash = keccak256("final");
         vm.prank(operatorA);
@@ -205,7 +217,7 @@ contract DistributedTrainingBSMTest is Test {
 
         vm.expectRevert(bytes("only tangle or owner"));
         vm.prank(operatorA);
-        bsm.updateContribution(jobId, operatorA, 100, 1000, true, 999);
+        bsm.updateContribution(jobId, operatorA, 100, 1000);
     }
 
     /// A certified `TrainingJobResult` submitted through the authenticated Tangle path
@@ -244,9 +256,9 @@ contract DistributedTrainingBSMTest is Test {
         (,,,,, bool certifiedB,) = bsm.contributions(jobId, operatorB);
         assertFalse(certifiedB);
 
-        // Complete and pay: only operatorA receives the pot.
-        bsm.updateContribution(jobId, operatorA, 100, 1000, true, 800);
-        bsm.updateContribution(jobId, operatorB, 100, 1000, false, 0);
+        // Set GPU-minutes separately; certification from onJobResult must be preserved.
+        bsm.updateContribution(jobId, operatorA, 100, 1000);
+        bsm.updateContribution(jobId, operatorB, 100, 1000);
 
         bytes32 hash = keccak256("final");
         vm.prank(operatorA);
@@ -259,6 +271,77 @@ contract DistributedTrainingBSMTest is Test {
 
         assertEq(operatorA.balance - balABefore, 10 ether);
         assertEq(operatorB.balance - balBBefore, 0);
+    }
+
+    /// onJobResult leaves GPU-minutes/steps untouched; only certification is recorded.
+    function test_onJobResultDoesNotWriteMetrics() public {
+        _register(operatorA);
+        uint64 jobId = _createJob();
+        vm.prank(operatorA);
+        bsm.joinTraining(jobId);
+
+        bytes memory result = abi.encode(
+            uint64(jobId),
+            bytes32(keccak256("final-checkpoint")),
+            uint64(1000),
+            uint32(1),
+            true,
+            int64(800),
+            int64(300),
+            uint32(200)
+        );
+
+        bsm.onJobResult(jobId, 0, 1, operatorA, "", result);
+
+        (uint64 gpuMinutes, uint64 steps,,,, bool certified, int64 improvementBps) = bsm.contributions(jobId, operatorA);
+        assertEq(gpuMinutes, 0);
+        assertEq(steps, 0);
+        assertTrue(certified);
+        assertEq(improvementBps, 800);
+    }
+
+    /// If onJobResult certifies an operator but updateContribution never sets
+    /// GPU-minutes, distributePayment reverts because there are no payable contributions.
+    function test_onJobResultWithoutGpuMinutesReverts() public {
+        _register(operatorA);
+        uint64 jobId =
+            bsm.createTrainingJob{ value: 10 ether }("llama-3.1-8b", "https://data.example.com", "sft", 1, 2, 8, 500);
+        vm.prank(operatorA);
+        bsm.joinTraining(jobId);
+
+        bytes memory result = abi.encode(
+            uint64(jobId),
+            bytes32(keccak256("final-checkpoint")),
+            uint64(1000),
+            uint32(1),
+            true,
+            int64(800),
+            int64(300),
+            uint32(200)
+        );
+        bsm.onJobResult(jobId, 0, 1, operatorA, "", result);
+
+        bytes32 hash = keccak256("final");
+        vm.prank(operatorA);
+        bsm.submitCheckpoint(jobId, hash, 1);
+
+        vm.expectRevert(bytes("no certified contributions"));
+        bsm.distributePayment(jobId);
+    }
+
+    /// Only Tangle (tangleCore) may call onJobResult; the owner may not.
+    function test_onJobResultRevertsForNonTangle() public {
+        _register(operatorA);
+        uint64 jobId = _createJob();
+        vm.prank(operatorA);
+        bsm.joinTraining(jobId);
+
+        bytes memory result =
+            abi.encode(uint64(jobId), bytes32(0), uint64(0), uint32(0), true, int64(0), int64(0), uint32(0));
+
+        vm.expectRevert();
+        vm.prank(operatorA);
+        bsm.onJobResult(jobId, 0, 1, operatorA, "", result);
     }
 
     /// An operator cannot have another operator's result applied to its own contribution:

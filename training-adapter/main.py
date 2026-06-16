@@ -483,22 +483,52 @@ class TrainingState:
 
 
 def _extract_text(example: dict) -> str:
-    """Best-effort text extraction from a dataset example."""
+    """Best-effort text extraction from a dataset example.
+
+    Handles plain-text fields and common chat formats. Returns empty string only
+    when no usable text is found; callers should reject empty examples rather
+    than emit NaN losses.
+    """
+    # Plain-text fields.
     for key in ("text", "content", "message", "prompt", "raw"):
         if key in example and isinstance(example[key], str):
             return example[key]
-    # Fallback: join all string fields.
+
+    # Chat formats: {"messages": [{"role": ..., "content": ...}, ...]}
+    if "messages" in example and isinstance(example["messages"], list):
+        parts = []
+        for msg in example["messages"]:
+            if isinstance(msg, dict):
+                content = msg.get("content") or msg.get("value") or msg.get("text")
+                if isinstance(content, str):
+                    parts.append(content)
+        if parts:
+            return "\n".join(parts)
+
+    # Conversations: {"conversations": [{"from": ..., "value": ...}, ...]}
+    if "conversations" in example and isinstance(example["conversations"], list):
+        parts = []
+        for turn in example["conversations"]:
+            if isinstance(turn, dict):
+                content = turn.get("value") or turn.get("content") or turn.get("text")
+                if isinstance(content, str):
+                    parts.append(content)
+        if parts:
+            return "\n".join(parts)
+
+    # Fallback: join all top-level scalar fields.
     parts = [str(v) for v in example.values() if isinstance(v, (str, int, float))]
     return "\n".join(parts)
 
 
-def _load_held_out_dataset(config: InitRequest, max_examples: Optional[int] = None):
+def _load_held_out_dataset(max_examples: Optional[int] = None):
     """Load the private held-out validation split used for certification.
 
     The held-out split must be separate from training data. Operators configure the
-    URL via HELD_OUT_DATASET_URL so the split stays private to the verifier running
-    this adapter. If the env var is missing, the endpoint returns a clear error
-    rather than falling back to training data or inventing losses.
+    URL via HELD_OUT_DATASET_URL and the split name via HELD_OUT_DATASET_SPLIT
+    (default: 'validation') so the split stays private to the verifier running this
+    adapter. There is no silent fallback to 'train'; if the configured split does not
+    exist, the endpoint fails closed with a clear error.
     """
     from datasets import load_dataset
 
@@ -521,10 +551,23 @@ def _load_held_out_dataset(config: InitRequest, max_examples: Optional[int] = No
             ext, "json"
         )
         ds = load_dataset(fmt, data_files=url)
+    elif Path(url).is_file():
+        # Local file path (jsonl, json, csv, parquet).
+        ext = url.rsplit(".", 1)[-1].lower()
+        fmt = {"jsonl": "json", "json": "json", "csv": "csv", "parquet": "parquet"}.get(
+            ext, "json"
+        )
+        ds = load_dataset(fmt, data_files=url)
     else:
         ds = load_dataset(url)
 
-    split = "validation" if "validation" in ds else "train"
+    split = os.environ.get("HELD_OUT_DATASET_SPLIT", "validation")
+    if split not in ds:
+        raise RuntimeError(
+            f"Held-out split '{split}' not found in dataset. "
+            f"Available splits: {list(ds.keys())}. "
+            f"Set HELD_OUT_DATASET_SPLIT to a split that is NOT your training data."
+        )
     ds = ds[split]
     if max_examples is not None and max_examples > 0:
         ds = ds.select(range(min(max_examples, len(ds))))
@@ -532,14 +575,15 @@ def _load_held_out_dataset(config: InitRequest, max_examples: Optional[int] = No
 
 
 def _load_base_model_for_eval(base_model: str, config: InitRequest):
-    """Load the original pretrained model for held-out comparison.
+    """Load the original pretrained model (no PEFT) for held-out comparison.
 
-    Loads without PEFT so the base is the raw pretrained checkpoint. Memory usage is
-    the caller's responsibility: if VRAM is tight, run the adapter on a machine that
-    can hold both the base and the candidate simultaneously, or use a smaller base.
+    The caller must use state.tokenizer for tokenization so base and candidate are
+    evaluated on identical token IDs. Memory usage is the caller's responsibility;
+    if VRAM is tight, run on a machine that can hold both models or use a smaller
+    base.
     """
     import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+    from transformers import AutoModelForCausalLM, BitsAndBytesConfig
 
     quant_config = None
     if config.load_in_4bit:
@@ -547,18 +591,15 @@ def _load_base_model_for_eval(base_model: str, config: InitRequest):
             load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16
         )
 
-    tokenizer = AutoTokenizer.from_pretrained(base_model)
-    if not tokenizer.pad_token:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    model = AutoModelForCausalLM.from_pretrained(
-        base_model,
-        quantization_config=quant_config,
-        device_map="auto" if torch.cuda.is_available() else "cpu",
-        torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-    )
+    kwargs = {
+        "quantization_config": quant_config,
+        "torch_dtype": torch.float16 if torch.cuda.is_available() else torch.float32,
+    }
+    if torch.cuda.is_available():
+        kwargs["device_map"] = "auto"
+    model = AutoModelForCausalLM.from_pretrained(base_model, **kwargs)
     model.eval()
-    return model, tokenizer
+    return model
 
 
 def _compute_per_example_losses(
@@ -566,13 +607,16 @@ def _compute_per_example_losses(
 ):
     """Compute average cross-entropy loss per held-out example.
 
-    Returns one float per dataset example. Lower is better. Padding tokens are
-    ignored so short examples are not penalized.
+    Returns one finite float per valid dataset example. Examples that tokenize to
+    only padding are skipped (not emitted as NaN), because serde_json rejects NaN
+    and the eval gate treats non-finite losses as uncertified.
     """
+    import math
     import torch
 
     device = next(model.parameters()).device
     losses: list[float] = []
+    skipped = 0
     was_training = model.training
     model.eval()
 
@@ -606,13 +650,19 @@ def _compute_per_example_losses(
                     valid = shift_labels[b] != -100
                     example_loss = per_token[b][valid]
                     if example_loss.numel() > 0:
-                        losses.append(float(example_loss.mean().cpu()))
+                        val = float(example_loss.mean().cpu())
+                        if math.isfinite(val):
+                            losses.append(val)
+                        else:
+                            skipped += 1
                     else:
-                        losses.append(float("nan"))
+                        skipped += 1
     finally:
         if was_training:
             model.train()
 
+    if skipped:
+        logger.warning(f"Skipped {skipped} held-out example(s) with no/finite loss")
     return losses
 
 
@@ -746,21 +796,28 @@ def eval_held_out(req: EvalHeldOutRequest):
     if not state.model or not state.tokenizer or not state.config:
         raise HTTPException(status_code=400, detail="Call /v1/train/init first")
 
+    base_model = None
     try:
         max_examples = req.max_examples
         if max_examples is None:
             env_max = os.environ.get("HELD_OUT_MAX_EXAMPLES")
-            max_examples = int(env_max) if env_max else 200
+            if env_max:
+                try:
+                    max_examples = int(env_max)
+                except ValueError as exc:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Invalid HELD_OUT_MAX_EXAMPLES: {env_max!r}",
+                    ) from exc
+            else:
+                max_examples = 200
 
-        ds = _load_held_out_dataset(state.config, max_examples)
+        ds = _load_held_out_dataset(max_examples)
         tokenizer = state.tokenizer
 
-        # Load the raw base model for comparison.
-        base_model, base_tokenizer = _load_base_model_for_eval(
-            req.base_model, state.config
-        )
-        if tokenizer is None:
-            tokenizer = base_tokenizer
+        # Load the raw base model for comparison. Keep this inside the try block so
+        # OOM or load failures always clean up.
+        base_model = _load_base_model_for_eval(req.base_model, state.config)
 
         max_length = state.config.max_seq_length
         base_losses = _compute_per_example_losses(base_model, tokenizer, ds, max_length)
@@ -768,11 +825,13 @@ def eval_held_out(req: EvalHeldOutRequest):
             state.model, tokenizer, ds, max_length
         )
 
-        del base_model
-        _clear_gpu_cache()
-
         if not base_losses or not candidate_losses:
             raise HTTPException(status_code=500, detail="No valid losses computed")
+        if len(base_losses) != len(candidate_losses):
+            raise HTTPException(
+                status_code=500,
+                detail=f"Loss length mismatch: base={len(base_losses)} candidate={len(candidate_losses)}",
+            )
 
         logger.info(
             f"Held-out eval: base_mean={sum(base_losses) / len(base_losses):.4f}, "
@@ -785,6 +844,13 @@ def eval_held_out(req: EvalHeldOutRequest):
     except Exception as e:
         logger.exception("Held-out eval failed")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if base_model is not None:
+            try:
+                del base_model
+                _clear_gpu_cache()
+            except Exception:
+                pass
 
 
 @app.get("/v1/train/status")
