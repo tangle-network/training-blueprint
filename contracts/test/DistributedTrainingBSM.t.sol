@@ -83,10 +83,13 @@ contract DistributedTrainingBSMTest is Test {
         vm.prank(operatorB);
         bsm.joinTraining(jobId);
 
-        bsm.updateContribution(jobId, operatorA, 10, 100);
-        (uint64 gpuMinutes, uint64 steps,,,) = bsm.contributions(jobId, operatorA);
+        bsm.updateContribution(jobId, operatorA, 10, 100, true, 500);
+        (uint64 gpuMinutes, uint64 steps,,,, bool certified, int64 improvementBps) =
+            bsm.contributions(jobId, operatorA);
         assertEq(gpuMinutes, 10);
         assertEq(steps, 100);
+        assertTrue(certified);
+        assertEq(improvementBps, 500);
     }
 
     function test_cannotJoinUnregistered() public {
@@ -96,6 +99,116 @@ contract DistributedTrainingBSMTest is Test {
         vm.expectRevert();
         vm.prank(unregistered);
         bsm.joinTraining(jobId);
+    }
+
+    /// An operator whose held-out certification is FALSE receives ZERO from
+    /// distributePayment, while a certified operator is paid the full pot. This is the
+    /// on-chain enforcement of "no pay for a non-improving checkpoint".
+    function test_uncertifiedOperatorGetsZero() public {
+        _register(operatorA);
+        _register(operatorB);
+        uint64 jobId = bsm.createTrainingJob{ value: 10 ether }(
+            "llama-3.1-8b", "https://data.example.com", "sft", 1, 2, 8, 500
+        );
+
+        vm.prank(operatorA);
+        bsm.joinTraining(jobId);
+        vm.prank(operatorB);
+        bsm.joinTraining(jobId);
+
+        // Both operators did equal GPU-minutes of work...
+        // operatorA's checkpoint cleared the held-out gate; operatorB's did NOT.
+        bsm.updateContribution(jobId, operatorA, 100, 1000, true, 800);
+        bsm.updateContribution(jobId, operatorB, 100, 1000, false, -300);
+
+        // Complete the job (epoch >= totalEpochs auto-completes).
+        bytes32 hash = keccak256("final");
+        vm.prank(operatorA);
+        bsm.submitCheckpoint(jobId, hash, 1);
+
+        uint256 balABefore = operatorA.balance;
+        uint256 balBBefore = operatorB.balance;
+
+        bsm.distributePayment(jobId);
+
+        // Certified operatorA takes the entire pot; uncertified operatorB gets ZERO.
+        assertEq(operatorA.balance - balABefore, 10 ether);
+        assertEq(operatorB.balance - balBBefore, 0);
+    }
+
+    /// Two certified operators with equal GPU-minutes split the pot 50/50 — the
+    /// existing pro-rata accounting is preserved for certified contributions.
+    function test_certifiedOperatorsSplitProRata() public {
+        _register(operatorA);
+        _register(operatorB);
+        uint64 jobId = bsm.createTrainingJob{ value: 10 ether }(
+            "llama-3.1-8b", "https://data.example.com", "sft", 1, 2, 8, 500
+        );
+
+        vm.prank(operatorA);
+        bsm.joinTraining(jobId);
+        vm.prank(operatorB);
+        bsm.joinTraining(jobId);
+
+        bsm.updateContribution(jobId, operatorA, 100, 1000, true, 800);
+        bsm.updateContribution(jobId, operatorB, 100, 1000, true, 600);
+
+        bytes32 hash = keccak256("final");
+        vm.prank(operatorA);
+        bsm.submitCheckpoint(jobId, hash, 1);
+
+        uint256 balABefore = operatorA.balance;
+        uint256 balBBefore = operatorB.balance;
+
+        bsm.distributePayment(jobId);
+
+        assertEq(operatorA.balance - balABefore, 5 ether);
+        assertEq(operatorB.balance - balBBefore, 5 ether);
+    }
+
+    /// If NO operator is certified, there is nothing to distribute and the call reverts
+    /// (fail-closed): the pot is not silently drained or paid to anyone.
+    function test_noCertifiedContributionsReverts() public {
+        _register(operatorA);
+        _register(operatorB);
+        uint64 jobId = bsm.createTrainingJob{ value: 10 ether }(
+            "llama-3.1-8b", "https://data.example.com", "sft", 1, 2, 8, 500
+        );
+
+        vm.prank(operatorA);
+        bsm.joinTraining(jobId);
+        vm.prank(operatorB);
+        bsm.joinTraining(jobId);
+
+        bsm.updateContribution(jobId, operatorA, 100, 1000, false, -100);
+        bsm.updateContribution(jobId, operatorB, 100, 1000, false, -200);
+
+        bytes32 hash = keccak256("final");
+        vm.prank(operatorA);
+        bsm.submitCheckpoint(jobId, hash, 1);
+
+        vm.expectRevert(bytes("no certified contributions"));
+        bsm.distributePayment(jobId);
+    }
+
+    /// An operator cannot certify itself: updateContribution/recordCertification are
+    /// gated to Tangle or the local admin, not arbitrary callers.
+    function test_operatorCannotSelfCertify() public {
+        _register(operatorA);
+        _register(operatorB);
+        uint64 jobId = _createJob();
+        vm.prank(operatorA);
+        bsm.joinTraining(jobId);
+        vm.prank(operatorB);
+        bsm.joinTraining(jobId);
+
+        vm.expectRevert(bytes("only tangle or owner"));
+        vm.prank(operatorA);
+        bsm.recordCertification(jobId, operatorA, true, 999);
+
+        vm.expectRevert(bytes("only tangle or owner"));
+        vm.prank(operatorA);
+        bsm.updateContribution(jobId, operatorA, 100, 1000, true, 999);
     }
 
     function _register(address op) internal {

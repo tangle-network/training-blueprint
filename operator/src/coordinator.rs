@@ -13,6 +13,7 @@ use tokio::sync::RwLock;
 use crate::checkpoint;
 use crate::config::OperatorConfig;
 use crate::demo::{self, DemoOptimizer, SparseUpdate};
+use crate::eval_gate::{self, EvalCertificate, EvalGateConfig, HeldOutLosses};
 use crate::network::TrainingNetwork;
 
 /// Result of a completed or joined training job.
@@ -20,6 +21,10 @@ pub struct JobResult {
     pub checkpoint_hash: [u8; 32],
     pub total_steps: u64,
     pub final_epoch: u32,
+    /// Held-out evaluation certificate for the final checkpoint. The protocol
+    /// pays for certified improvement on the private held-out split, not for the
+    /// checkpoint hash on its own.
+    pub certificate: EvalCertificate,
 }
 
 /// Active training job state.
@@ -94,6 +99,9 @@ impl TrainingCoordinator {
                 checkpoint_hash: job.latest_checkpoint_hash,
                 total_steps: job.steps_completed,
                 final_epoch: job.current_epoch,
+                // Joining an in-flight job does not re-run the held-out gate; the
+                // certificate is minted once, when the job's owner finalizes it.
+                certificate: eval_gate::uncertified("job already in progress"),
             });
         }
 
@@ -131,9 +139,7 @@ impl TrainingCoordinator {
         drop(jobs);
 
         // Run training loop
-        let result = self
-            .run_training_loop(job_id, sync_interval_steps)
-            .await?;
+        let result = self.run_training_loop(job_id, sync_interval_steps).await?;
 
         Ok(result)
     }
@@ -218,10 +224,7 @@ impl TrainingCoordinator {
         if job.latest_checkpoint_step > 0 {
             let checkpoint_path = checkpoint::checkpoint_path(job_id, job.latest_checkpoint_step);
             if let Ok(data) = tokio::fs::read(&checkpoint_path).await {
-                self.network
-                    .on_momentum_received(&data)
-                    .await
-                    .ok();
+                self.network.on_momentum_received(&data).await.ok();
             }
         }
 
@@ -249,8 +252,7 @@ impl TrainingCoordinator {
         if let Some(orphan_shard) = job.shard_assignments.remove(peer) {
             let remaining: Vec<String> = job.shard_assignments.keys().cloned().collect();
             if !remaining.is_empty() {
-                let chunk_size =
-                    (orphan_shard.end - orphan_shard.start) / remaining.len() as u64;
+                let chunk_size = (orphan_shard.end - orphan_shard.start) / remaining.len() as u64;
                 let mut offset = orphan_shard.start;
 
                 for (i, op) in remaining.iter().enumerate() {
@@ -294,7 +296,9 @@ impl TrainingCoordinator {
     ) -> anyhow::Result<Vec<ndarray::Array2<f32>>> {
         // Broadcast our sparse updates
         for update in &local_updates {
-            { let _data = self.network.prepare_momentum_broadcast(update)?; };
+            {
+                let _data = self.network.prepare_momentum_broadcast(update)?;
+            };
         }
 
         // Collect updates from peers with timeout
@@ -444,6 +448,15 @@ impl TrainingCoordinator {
             self.submit_checkpoint(job_id, hash, epoch + 1).await?;
         }
 
+        // Held-out evaluation gate: score the base model and the final checkpoint
+        // on the private held-out split and certify the improvement before the
+        // result goes on-chain. A checkpoint that does not measurably beat the base
+        // model (bootstrap lower bound below the protocol margin) is reported as
+        // uncertified; the legitimate result submitter records that verdict per
+        // operator via the authenticated `updateContribution`/`recordCertification`
+        // path, and `distributePayment` pays ZERO for an uncertified contribution.
+        let certificate = self.certify_final_checkpoint(&base_model).await;
+
         // Mark completed
         let mut jobs = self.jobs.write().await;
         let job = jobs.get_mut(&job_id).unwrap();
@@ -453,7 +466,29 @@ impl TrainingCoordinator {
             checkpoint_hash: job.latest_checkpoint_hash,
             total_steps: job.steps_completed,
             final_epoch: job.current_epoch,
+            certificate,
         })
+    }
+
+    /// Score the base model and the final checkpoint on the private held-out split
+    /// and certify the improvement. Returns an uncertified result if the backend
+    /// cannot supply held-out losses, so the chain fails closed (no proof, no pay).
+    async fn certify_final_checkpoint(&self, base_model: &str) -> EvalCertificate {
+        let backend = match crate::training::create_backend(&self.config.training) {
+            Ok(b) => b,
+            Err(e) => return eval_gate::uncertified(&format!("eval backend unavailable: {e}")),
+        };
+
+        match backend.held_out_losses(base_model).await {
+            Ok(losses) => self.certify_losses(&losses),
+            Err(e) => eval_gate::uncertified(&format!("held-out eval failed: {e}")),
+        }
+    }
+
+    /// Run the held-out evaluation gate over already-collected per-example losses.
+    /// Split out so it can be exercised deterministically in tests without a backend.
+    pub fn certify_losses(&self, losses: &HeldOutLosses) -> EvalCertificate {
+        eval_gate::certify(losses, &EvalGateConfig::default())
     }
 }
 

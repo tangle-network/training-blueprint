@@ -35,7 +35,7 @@ sol! {
 }
 
 /// QoS configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct QoSConfig {
     /// Heartbeat interval in seconds. 0 = disabled.
     #[serde(default)]
@@ -44,15 +44,6 @@ pub struct QoSConfig {
     /// On-chain address of the IOperatorStatusRegistry contract.
     #[serde(default)]
     pub status_registry_address: Option<String>,
-}
-
-impl Default for QoSConfig {
-    fn default() -> Self {
-        Self {
-            heartbeat_interval_secs: 0,
-            status_registry_address: None,
-        }
-    }
 }
 
 /// Training-specific metrics for heartbeat submission.
@@ -71,13 +62,18 @@ pub struct TrainingMetrics {
 }
 
 /// Global training metrics (updated by coordinator).
-static TRAINING_METRICS: blueprint_sdk::std::sync::OnceLock<Arc<blueprint_sdk::std::sync::RwLock<TrainingMetrics>>> =
-    blueprint_sdk::std::sync::OnceLock::new();
+static TRAINING_METRICS: blueprint_sdk::std::sync::OnceLock<
+    Arc<blueprint_sdk::std::sync::RwLock<TrainingMetrics>>,
+> = blueprint_sdk::std::sync::OnceLock::new();
 
 /// Get or initialize the global training metrics.
 pub fn training_metrics() -> Arc<blueprint_sdk::std::sync::RwLock<TrainingMetrics>> {
     TRAINING_METRICS
-        .get_or_init(|| Arc::new(blueprint_sdk::std::sync::RwLock::new(TrainingMetrics::default())))
+        .get_or_init(|| {
+            Arc::new(blueprint_sdk::std::sync::RwLock::new(
+                TrainingMetrics::default(),
+            ))
+        })
         .clone()
 }
 
@@ -155,15 +151,7 @@ pub async fn start_heartbeat(
         loop {
             interval.tick().await;
 
-            match send_heartbeat(
-                &wallet,
-                &rpc_url,
-                registry_addr,
-                service_id,
-                blueprint_id,
-            )
-            .await
-            {
+            match send_heartbeat(&wallet, &rpc_url, registry_addr, service_id, blueprint_id).await {
                 Ok(()) => {
                     tracing::debug!(service_id, blueprint_id, "heartbeat submitted");
                 }

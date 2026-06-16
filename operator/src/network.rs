@@ -166,7 +166,9 @@ impl TrainingNetwork {
         let msg: CoordinationMessage = serde_json::from_slice(data)?;
 
         match &msg {
-            CoordinationMessage::JoinJob { job_id, peer_id, .. } => {
+            CoordinationMessage::JoinJob {
+                job_id, peer_id, ..
+            } => {
                 tracing::info!(job_id, peer_id, "peer joined training job");
                 let mut peers = self.job_peers.write().await;
                 let job_peers = peers.entry(*job_id).or_default();
@@ -181,7 +183,8 @@ impl TrainingNetwork {
                     job_peers.retain(|p| p != peer_id);
                 }
             }
-            CoordinationMessage::SyncReady { .. } | CoordinationMessage::CheckpointReady { .. } => {}
+            CoordinationMessage::SyncReady { .. } | CoordinationMessage::CheckpointReady { .. } => {
+            }
         }
 
         let mut inbox = self.coordination_inbox.write().await;
@@ -190,7 +193,10 @@ impl TrainingNetwork {
     }
 
     /// Prepare a coordination message for broadcast. Returns serialized bytes.
-    pub fn prepare_coordination_broadcast(&self, msg: &CoordinationMessage) -> anyhow::Result<Vec<u8>> {
+    pub fn prepare_coordination_broadcast(
+        &self,
+        msg: &CoordinationMessage,
+    ) -> anyhow::Result<Vec<u8>> {
         Ok(serde_json::to_vec(msg)?)
     }
 
@@ -230,10 +236,8 @@ impl TrainingNetwork {
 /// The `handle` type is `NetworkServiceHandle<K>` from blueprint-networking.
 /// We accept `impl FnMut() -> Option<ProtocolMessage>` so callers can adapt
 /// any handle type without this crate depending on the generic `K: KeyType`.
-pub async fn run_gossip_event_loop<F>(
-    mut next_message: F,
-    network: Arc<TrainingNetwork>,
-) where
+pub async fn run_gossip_event_loop<F>(mut next_message: F, network: Arc<TrainingNetwork>)
+where
     F: FnMut() -> Option<blueprint_networking::types::ProtocolMessage> + Send + 'static,
 {
     loop {

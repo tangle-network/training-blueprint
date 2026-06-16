@@ -34,6 +34,17 @@ contract DistributedTrainingBSM is BlueprintServiceManagerBase {
         uint32 joinedAtEpoch;
         uint32 leftAtEpoch;
         bool slashed;
+        /// @notice Whether this operator's final checkpoint cleared the held-out
+        ///         evaluation gate (bootstrap CI lower bound above the protocol
+        ///         margin), decoded off-chain from the submitted `TrainingJobResult`
+        ///         and recorded through the authenticated result path. {distributePayment}
+        ///         pays ZERO to an operator whose contribution is not certified.
+        bool heldOutCertified;
+        /// @notice Certified held-out improvement in signed basis points (1e4 scale);
+        ///         negative is a regression. Advisory/audit metadata — payout gates on
+        ///         the {heldOutCertified} bool, which the off-chain gate sets only when
+        ///         the CI lower bound cleared the margin.
+        int64 improvementBps;
     }
 
     struct OperatorCapabilities {
@@ -73,6 +84,9 @@ contract DistributedTrainingBSM is BlueprintServiceManagerBase {
     event PaymentDistributed(uint64 indexed jobId, address indexed operator, uint256 amount);
     event OperatorRegistered(address indexed operator, uint32 gpuCount, uint32 vramMib);
     event OperatorSlashed(uint64 indexed jobId, address indexed operator, string reason);
+    event ContributionCertified(
+        uint64 indexed jobId, address indexed operator, bool certified, int64 improvementBps
+    );
 
     // --- Modifiers ---
 
@@ -249,6 +263,13 @@ contract DistributedTrainingBSM is BlueprintServiceManagerBase {
     }
 
     /// @notice Distribute payment proportionally by GPU-minutes after job completion.
+    /// @dev An operator is paid only if its contribution cleared the held-out evaluation
+    ///      gate ({OperatorContribution.heldOutCertified}), which the authenticated result
+    ///      path ({updateContribution}/{recordCertification}) sets from the decoded
+    ///      `TrainingJobResult`. A non-improving/regressing checkpoint is reported
+    ///      uncertified off-chain, so its operator is excluded from BOTH the denominator
+    ///      and the payout loop here and receives ZERO. Certified operators keep the
+    ///      existing GPU-minutes/slash pro-rata accounting.
     function distributePayment(uint64 jobId) external {
         TrainingJob storage job = jobs[jobId];
         require(job.completed, "not completed");
@@ -259,24 +280,32 @@ contract DistributedTrainingBSM is BlueprintServiceManagerBase {
 
         for (uint256 i = 0; i < operatorCount; i++) {
             address op = job.operators[i];
-            if (!contributions[jobId][op].slashed) {
+            if (_isPayable(jobId, op)) {
                 totalGpuMinutes += contributions[jobId][op].gpuMinutesContributed;
             }
         }
 
-        require(totalGpuMinutes > 0, "no contributions");
+        require(totalGpuMinutes > 0, "no certified contributions");
 
         uint256 remaining = job.totalPayment;
         job.totalPayment = 0;
 
         for (uint256 i = 0; i < operatorCount; i++) {
             address op = job.operators[i];
-            if (!contributions[jobId][op].slashed && contributions[jobId][op].gpuMinutesContributed > 0) {
+            if (_isPayable(jobId, op) && contributions[jobId][op].gpuMinutesContributed > 0) {
                 uint256 share = (remaining * contributions[jobId][op].gpuMinutesContributed) / totalGpuMinutes;
                 payable(op).transfer(share);
                 emit PaymentDistributed(jobId, op, share);
             }
         }
+    }
+
+    /// @notice An operator is payable iff it is not slashed AND its contribution
+    ///         cleared the held-out evaluation gate. Single chokepoint so the
+    ///         certification requirement cannot be bypassed by either accrual loop.
+    function _isPayable(uint64 jobId, address operator) internal view returns (bool) {
+        OperatorContribution storage c = contributions[jobId][operator];
+        return !c.slashed && c.heldOutCertified;
     }
 
     /// @notice Configure hardware requirements for a model tier.
@@ -304,15 +333,43 @@ contract DistributedTrainingBSM is BlueprintServiceManagerBase {
         emit OperatorSlashed(jobId, operator, reason);
     }
 
-    /// @notice Update operator contribution metrics (called by heartbeat processor).
+    /// @notice Update operator contribution metrics and held-out certification in one
+    ///         authenticated write, from the decoded `TrainingJobResult`.
+    /// @dev    Authenticated by {onlyTangleOrOwner}: only Tangle (the legitimate result
+    ///         submitter) or the local admin may set these. There is deliberately NO
+    ///         path for an operator to mark its own contribution certified. `certified`
+    ///         must be the off-chain held-out gate's `heldOutCertified`; an uncertified
+    ///         contribution is paid ZERO by {distributePayment}.
     function updateContribution(
         uint64 jobId,
         address operator,
         uint64 gpuMinutes,
-        uint64 steps
+        uint64 steps,
+        bool certified,
+        int64 improvementBps
     ) external onlyTangleOrOwner {
-        contributions[jobId][operator].gpuMinutesContributed = gpuMinutes;
-        contributions[jobId][operator].stepsCompleted = steps;
+        OperatorContribution storage c = contributions[jobId][operator];
+        c.gpuMinutesContributed = gpuMinutes;
+        c.stepsCompleted = steps;
+        c.heldOutCertified = certified;
+        c.improvementBps = improvementBps;
+        emit ContributionCertified(jobId, operator, certified, improvementBps);
+    }
+
+    /// @notice Record only the held-out certification for an operator, without
+    ///         touching GPU-minutes/steps. For flows that submit metrics and the
+    ///         certificate separately.
+    /// @dev    Same authentication as {updateContribution}: result-submitter only.
+    function recordCertification(
+        uint64 jobId,
+        address operator,
+        bool certified,
+        int64 improvementBps
+    ) external onlyTangleOrOwner {
+        OperatorContribution storage c = contributions[jobId][operator];
+        c.heldOutCertified = certified;
+        c.improvementBps = improvementBps;
+        emit ContributionCertified(jobId, operator, certified, improvementBps);
     }
 
     // --- View Functions ---

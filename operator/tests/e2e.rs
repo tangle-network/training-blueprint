@@ -36,19 +36,27 @@ async fn test_demo_optimizer_sync() -> Result<()> {
     assert!(update_a.indices.len() <= 8, "top-k should limit indices");
     assert_eq!(update_a.indices.len(), update_a.values.len());
 
-    println!("Operator A sparse: {} indices out of 16", update_a.indices.len());
-    println!("Operator B sparse: {} indices out of 16", update_b.indices.len());
-    println!("Communication: {}B vs {}B full", update_a.byte_size(), 16 * 4);
+    println!(
+        "Operator A sparse: {} indices out of 16",
+        update_a.indices.len()
+    );
+    println!(
+        "Operator B sparse: {} indices out of 16",
+        update_b.indices.len()
+    );
+    println!(
+        "Communication: {}B vs {}B full",
+        update_a.byte_size(),
+        16 * 4
+    );
 
     // Aggregate updates from both operators
-    let aggregated = distributed_training::demo::aggregate_updates(&[
-        sparse_a[0].clone(),
-        sparse_b[0].clone(),
-    ]);
+    let aggregated =
+        distributed_training::demo::aggregate_updates(&[sparse_a[0].clone(), sparse_b[0].clone()]);
 
     // Apply aggregated momentum to both optimizers
-    opt_a.apply_sync(&vec![aggregated.clone()]);
-    opt_b.apply_sync(&vec![aggregated]);
+    opt_a.apply_sync(std::slice::from_ref(&aggregated));
+    opt_b.apply_sync(&[aggregated]);
 
     // After sync, both optimizers should have the same momentum
     let mom_a = opt_a.get_momentum();
@@ -58,9 +66,16 @@ async fn test_demo_optimizer_sync() -> Result<()> {
     // After applying the same aggregated momentum, the local momentums move
     // toward each other. They won't be identical because each operator retains
     // its own local momentum history — DeMo converges over multiple sync rounds.
-    let diff: f32 = mom_a[0].iter().zip(mom_b[0].iter()).map(|(a, b)| (a - b).abs()).sum();
+    let diff: f32 = mom_a[0]
+        .iter()
+        .zip(mom_b[0].iter())
+        .map(|(a, b)| (a - b).abs())
+        .sum();
     // The diff should be smaller than the gradient difference (0.01 vs 0.02 per element * 16 = 0.16)
-    assert!(diff < 0.16, "momentums should be closer after sync, diff={diff}");
+    assert!(
+        diff < 0.16,
+        "momentums should be closer after sync, diff={diff}"
+    );
 
     println!("Post-sync momentum diff: {diff:.2e} (should be ~0)");
     println!("DeMo sync test PASSED");
