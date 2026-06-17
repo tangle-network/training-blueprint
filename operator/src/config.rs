@@ -62,6 +62,69 @@ pub struct TrainingConfig {
     /// Network bandwidth in Mbps (for DeMo efficiency estimation).
     #[serde(default = "default_bandwidth")]
     pub network_bandwidth_mbps: u64,
+
+    // --- Hyperparameters passed to the training adapter ---
+    /// Dataset format expected by the adapter ("chat" or "text").
+    #[serde(default = "default_dataset_format")]
+    pub dataset_format: String,
+
+    /// Maximum sequence length.
+    #[serde(default = "default_max_seq_length")]
+    pub max_seq_length: u32,
+
+    /// Per-device train batch size.
+    #[serde(default = "default_batch_size")]
+    pub batch_size: u32,
+
+    /// Gradient accumulation steps.
+    #[serde(default = "default_gradient_accumulation_steps")]
+    pub gradient_accumulation_steps: u32,
+
+    /// LoRA rank.
+    #[serde(default = "default_lora_r")]
+    pub lora_r: u32,
+
+    /// LoRA alpha.
+    #[serde(default = "default_lora_alpha")]
+    pub lora_alpha: u32,
+
+    /// LoRA dropout.
+    #[serde(default = "default_lora_dropout")]
+    pub lora_dropout: f64,
+
+    /// LoRA target modules.
+    #[serde(default = "default_lora_target_modules")]
+    pub lora_target_modules: Vec<String>,
+
+    /// Learning rate.
+    #[serde(default = "default_learning_rate")]
+    pub learning_rate: f64,
+
+    /// Warmup steps.
+    #[serde(default = "default_warmup_steps")]
+    pub warmup_steps: u32,
+
+    /// LR scheduler type.
+    #[serde(default = "default_lr_scheduler")]
+    pub lr_scheduler: String,
+
+    /// Weight decay.
+    #[serde(default = "default_weight_decay")]
+    pub weight_decay: f64,
+
+    /// Whether to load the model in 4-bit (requires GPU).
+    #[serde(default = "default_load_in_4bit")]
+    pub load_in_4bit: bool,
+
+    /// Top-k sparsification ratio used for DeMo momentum sync (0.001 = 0.1%).
+    #[serde(default = "default_demo_top_k_ratio")]
+    pub demo_top_k_ratio: f64,
+
+    /// Minimum held-out loss reduction (base − candidate) that the bootstrap CI lower
+    /// bound must exceed for the checkpoint to be certified. Default 0.02; smoke tests
+    /// can lower it, production operators should keep it strict.
+    #[serde(default = "default_held_out_min_improvement")]
+    pub held_out_min_improvement: f64,
 }
 
 /// Networking (libp2p) configuration.
@@ -104,6 +167,66 @@ fn default_bandwidth() -> u64 {
     1000 // 1 Gbps default
 }
 
+fn default_dataset_format() -> String {
+    "text".to_string()
+}
+
+fn default_max_seq_length() -> u32 {
+    64
+}
+
+fn default_batch_size() -> u32 {
+    2
+}
+
+fn default_gradient_accumulation_steps() -> u32 {
+    1
+}
+
+fn default_lora_r() -> u32 {
+    4
+}
+
+fn default_lora_alpha() -> u32 {
+    8
+}
+
+fn default_lora_dropout() -> f64 {
+    0.05
+}
+
+fn default_lora_target_modules() -> Vec<String> {
+    vec!["q_proj".to_string(), "v_proj".to_string()]
+}
+
+fn default_learning_rate() -> f64 {
+    2e-4
+}
+
+fn default_warmup_steps() -> u32 {
+    0
+}
+
+fn default_lr_scheduler() -> String {
+    "cosine".to_string()
+}
+
+fn default_weight_decay() -> f64 {
+    0.01
+}
+
+fn default_load_in_4bit() -> bool {
+    false
+}
+
+fn default_demo_top_k_ratio() -> f64 {
+    0.001
+}
+
+fn default_held_out_min_improvement() -> f64 {
+    0.02
+}
+
 fn default_listen_addr() -> String {
     "/ip4/0.0.0.0/tcp/9000".to_string()
 }
@@ -121,8 +244,12 @@ impl OperatorConfig {
         // Prefix: TRAIN_OP_ (e.g. TRAIN_OP_TANGLE__RPC_URL)
         builder = builder.add_source(
             config::Environment::with_prefix("TRAIN_OP")
+                .prefix_separator("_")
                 .separator("__")
-                .try_parsing(true),
+                .try_parsing(true)
+                .list_separator(",")
+                .with_list_parse_key("training.lora_target_modules")
+                .with_list_parse_key("training.supported_methods"),
         );
 
         let cfg = builder.build()?.try_deserialize::<Self>()?;

@@ -26,6 +26,8 @@ use tangle_inference_core::AppState;
 use crate::config::OperatorConfig;
 use crate::coordinator::TrainingCoordinator;
 use crate::server::TrainingAppBackend;
+use blueprint_crypto::k256::K256Ecdsa;
+use blueprint_networking::service_handle::NetworkServiceHandle;
 
 // --- ABI types for on-chain job encoding ---
 
@@ -38,6 +40,7 @@ sol! {
         string method;
         uint32 totalEpochs;
         uint64 syncIntervalSteps;
+        uint64 maxSteps;
     }
 
     #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -146,6 +149,7 @@ pub async fn handle_training_job(
             &request.method,
             request.totalEpochs,
             request.syncIntervalSteps,
+            request.maxSteps,
         )
         .await
         .map_err(|e| RunnerError::Other(format!("training job failed: {e}").into()))?;
@@ -200,25 +204,26 @@ pub async fn handle_leave_job(
 #[derive(Clone)]
 pub struct TrainingServer {
     pub config: Arc<OperatorConfig>,
+    pub network: NetworkServiceHandle<K256Ecdsa>,
 }
 
 impl BackgroundService for TrainingServer {
     async fn start(&self) -> Result<oneshot::Receiver<Result<(), RunnerError>>, RunnerError> {
         let (tx, rx) = oneshot::channel();
         let config = self.config.clone();
+        let network = self.network.clone();
 
         tokio::spawn(async move {
             // Initialize training coordinator
-            let coord = match TrainingCoordinator::new(config.clone()).await {
-                Ok(c) => Arc::new(c),
-                Err(e) => {
-                    tracing::error!(error = %e, "failed to create TrainingCoordinator");
-                    let _ = tx.send(Err(RunnerError::Other(e.to_string().into())));
-                    return;
-                }
-            };
+            let coord = Arc::new(TrainingCoordinator::new(config.clone(), network));
 
             register_coordinator(coord.clone());
+
+            // Process coordination messages (JoinJob / LeaveJob) from peers.
+            let coord_inbox = coord.clone();
+            tokio::spawn(async move {
+                coord_inbox.run_coordination_inbox().await;
+            });
 
             // Build core AppState with billing support
             let notifier = Arc::new(blueprint_webhooks::notifier::JobNotifier::new(

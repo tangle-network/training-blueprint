@@ -12,9 +12,14 @@ path = "src/lib.rs"
 name = "training-operator"
 path = "src/main.rs"
 
+[[bin]]
+name = "training-operator-http"
+path = "src/bin/http-only.rs"
+
 [dependencies]
 blueprint-sdk = { workspace = true, features = ["tee"] }
 blueprint-networking = { workspace = true }
+
 tangle-inference-core = { git = "https://github.com/tangle-network/tangle-inference-core", branch = "master" }
 alloy = { workspace = true }
 alloy-sol-types = { workspace = true }
@@ -46,7 +51,7 @@ blueprint-crypto = { workspace = true }
 libp2p = { version = "0.54", features = ["identify"] }
 crossbeam-channel = "0.5"
 rand = "0.8"
-blueprint-webhooks = { git = "https://github.com/tangle-network/blueprint", branch = "feat/wire-remote-gpu-provisioning", features = ["notifier"] }
+blueprint-webhooks = { version = "0.2.0-alpha.9", features = ["notifier"] }
 tokio-stream = "0.1"
 futures = "0.3"
 
@@ -54,4 +59,9 @@ futures = "0.3"
 blueprint-sdk = { version = "0.2.0-alpha.9", features = ["testing", "tangle"] }
 blueprint-networking = { git = "https://github.com/tangle-network/blueprint", branch = "main" }
 blueprint-crypto = { git = "https://github.com/tangle-network/blueprint", branch = "main" }
+blueprint-anvil-testing-utils = "0.2.0-alpha.9"
+alloy-primitives = "1"
+alloy-sol-types = "1"
 tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process"] }
+serde_json = "1"

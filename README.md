@@ -67,8 +67,8 @@ cargo build --release
 export TRAIN_OP_TANGLE__RPC_URL=https://rpc.tangle.tools
 export TRAIN_OP_TANGLE__OPERATOR_KEY=0x...
 export TRAIN_OP_TRAINING__ENDPOINT=http://localhost:5000
-export TRAIN_OP_GPU__GPU_COUNT=4
-export TRAIN_OP_GPU__TOTAL_VRAM_MIB=327680
+export TRAIN_OP_GPU__EXPECTED_GPU_COUNT=4
+export TRAIN_OP_GPU__MIN_VRAM_MIB=327680
 
 # Run
 ./target/release/training-operator
