@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Optional
 
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 logging.basicConfig(level=logging.INFO)
@@ -91,6 +91,16 @@ METHOD_BACKEND_PRIORITY: dict[str, list[str]] = {
 
 
 def pick_backend(method: str) -> str:
+    forced = os.environ.get("TRAINING_BACKEND")
+    if forced:
+        forced = forced.lower()
+        if AVAILABLE_BACKENDS.get(forced):
+            return forced
+        raise RuntimeError(
+            f"TRAINING_BACKEND={forced} is not available. "
+            f"Available: {[k for k, v in AVAILABLE_BACKENDS.items() if v and k != 'gpu']}"
+        )
+
     priority = METHOD_BACKEND_PRIORITY.get(method, ["trl"])
     for name in priority:
         if AVAILABLE_BACKENDS.get(name):
@@ -128,6 +138,9 @@ class InitRequest(BaseModel):
     load_in_4bit: bool = True
     beta: float = 0.1
     num_generations: int = 4
+    shard_start: Optional[int] = None
+    shard_end: Optional[int] = None
+    demo_top_k_ratio: float = 0.001
 
 
 class StepRequest(BaseModel):
@@ -142,6 +155,29 @@ class CheckpointRequest(BaseModel):
 
 class MomentumRequest(BaseModel):
     action: str = "get"
+
+
+class SparseUpdate(BaseModel):
+    indices: list[int]
+    values: list[float]
+    shape: list[int]
+    step: int
+    peer_id: str = ""
+
+
+class DemoStepRequest(BaseModel):
+    num_steps: int = 1
+
+
+class DemoStepResponse(BaseModel):
+    updates: list[SparseUpdate]
+    loss: float
+    steps_completed: int
+    total_steps: int
+
+
+class DemoApplySyncRequest(BaseModel):
+    peer_updates: list[list[SparseUpdate]]
 
 
 class EvalHeldOutRequest(BaseModel):
@@ -165,6 +201,7 @@ class TrainingState:
         self.last_loss: float = 0.0
         self.start_time: float = 0.0
         self.tokens_processed: int = 0
+        self.demo_baseline: Optional[dict] = None
 
     def init_unsloth(self, config: InitRequest):
         from unsloth import FastLanguageModel
@@ -270,7 +307,7 @@ class TrainingState:
             torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
         )
 
-        if config.method in ("lora", "qlora"):
+        if config.method in ("sft", "lora", "qlora"):
             peft_config = LoraConfig(
                 r=config.lora_r,
                 lora_alpha=config.lora_alpha,
@@ -295,11 +332,14 @@ class TrainingState:
                 logging_steps=1,
                 save_strategy="no",
                 report_to="none",
-                max_seq_length=config.max_seq_length,
+                use_cpu=True,
+                bf16=False,
+                fp16=False,
+                max_length=config.max_seq_length,
             )
             self.trainer = SFTTrainer(
                 model=self.model,
-                tokenizer=self.tokenizer,
+                processing_class=self.tokenizer,
                 train_dataset=dataset,
                 args=train_config,
             )
@@ -366,8 +406,23 @@ class TrainingState:
 
         url = config.dataset_url
 
+        # Local file:// URL (absolute path)
+        if url.startswith("file://"):
+            from urllib.parse import urlparse
+            from pathlib import Path
+
+            path = urlparse(url).path
+            ext = Path(path).suffix.lower().lstrip(".")
+            fmt = {
+                "jsonl": "json",
+                "json": "json",
+                "csv": "csv",
+                "parquet": "parquet",
+            }.get(ext, "json")
+            ds = load_dataset(fmt, data_files=path, split="train")
+
         # S3/GCS/R2 — HuggingFace datasets handles these via fsspec
-        if (
+        elif (
             url.startswith("s3://")
             or url.startswith("gs://")
             or url.startswith("r2://")
@@ -381,10 +436,10 @@ class TrainingState:
                 "csv": "csv",
                 "parquet": "parquet",
             }.get(ext, "json")
-            return load_dataset(fmt, data_files=url, split="train")
+            ds = load_dataset(fmt, data_files=url, split="train")
 
         # HTTP/HTTPS URL
-        if url.startswith("http"):
+        elif url.startswith("http"):
             ext = url.rsplit(".", 1)[-1].split("?")[0].lower()
             fmt = {
                 "jsonl": "json",
@@ -392,10 +447,22 @@ class TrainingState:
                 "csv": "csv",
                 "parquet": "parquet",
             }.get(ext, "json")
-            return load_dataset(fmt, data_files=url, split="train")
+            ds = load_dataset(fmt, data_files=url, split="train")
 
         # HuggingFace Hub dataset name (e.g. "trl-lib/Capybara")
-        return load_dataset(url, split="train")
+        else:
+            ds = load_dataset(url, split="train")
+
+        # Shard the dataset when running as one operator in a distributed job.
+        start = config.shard_start if config.shard_start is not None else 0
+        end = config.shard_end if config.shard_end is not None else len(ds)
+        if start > 0 or end < len(ds):
+            ds = ds.select(range(start, min(end, len(ds))))
+
+        # Ensure a plain-text field exists for the TRL SFTTrainer.
+        if config.dataset_format == "chat" and "text" not in ds.column_names:
+            ds = ds.map(lambda ex: {"text": _extract_text(ex)})
+        return ds
 
     def train_steps(self, num_steps: int, return_norms: bool = False) -> dict:
         import torch
@@ -539,7 +606,16 @@ def _load_held_out_dataset(max_examples: Optional[int] = None):
             "Configure a private held-out dataset for certification."
         )
 
-    if url.startswith("s3://") or url.startswith("gs://") or url.startswith("r2://"):
+    if url.startswith("file://"):
+        from urllib.parse import urlparse
+
+        path = urlparse(url).path
+        ext = path.rsplit(".", 1)[-1].lower()
+        fmt = {"jsonl": "json", "json": "json", "csv": "csv", "parquet": "parquet"}.get(
+            ext, "json"
+        )
+        ds = load_dataset(fmt, data_files=path)
+    elif url.startswith("s3://") or url.startswith("gs://") or url.startswith("r2://"):
         ext = url.rsplit(".", 1)[-1].lower()
         fmt = {"jsonl": "json", "json": "json", "csv": "csv", "parquet": "parquet"}.get(
             ext, "json"
@@ -735,6 +811,7 @@ def init_training(req: InitRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+
 @app.post("/v1/train/step")
 def train_step(req: StepRequest):
     if not state.trainer:
@@ -747,17 +824,32 @@ def train_step(req: StepRequest):
 
 
 @app.post("/v1/train/momentum")
-def handle_momentum(req: MomentumRequest):
+def handle_momentum(req: MomentumRequest, request: Request):
+    import torch
+
     if not state.trainer:
         raise HTTPException(status_code=400, detail="Not initialized")
     if req.action == "get":
-        data = state.get_momentum()
+        buf = io.BytesIO()
+        torch.save(state.trainer.optimizer.state_dict(), buf)
+        data = buf.getvalue()
         return {
             "size_bytes": len(data),
             "hash": hashlib.sha256(data).hexdigest() if data else "",
         }
     elif req.action == "set":
-        # Momentum data sent as raw bytes in request body
+        # Momentum/optimizer state sent as raw torch-serialized bytes in body.
+        try:
+            body = request.body()
+            if not body:
+                raise HTTPException(status_code=400, detail="Empty optimizer state body")
+            payload = io.BytesIO(body)
+            state.trainer.optimizer.load_state_dict(torch.load(payload, weights_only=False))
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception("Failed to apply optimizer state")
+            raise HTTPException(status_code=400, detail=f"Invalid optimizer state: {e}")
         return {"status": "applied"}
     raise HTTPException(status_code=400, detail=f"Unknown action: {req.action}")
 
@@ -784,6 +876,61 @@ def load_checkpoint(req: CheckpointRequest):
     state.config.base_model = req.path
     init_training(state.config)
     return {"status": "loaded", "path": req.path}
+
+
+@app.post("/v1/train/save_state")
+def save_state(request: Request):
+    import torch
+    from peft import PeftModel, get_peft_model_state_dict
+
+    if not state.model or not state.trainer or not state.config:
+        raise HTTPException(status_code=400, detail="Call /v1/train/init first")
+    try:
+        model_state_dict = (
+            get_peft_model_state_dict(state.model)
+            if isinstance(state.model, PeftModel)
+            else state.model.state_dict()
+        )
+        buf = io.BytesIO()
+        torch.save(
+            {
+                "model_state_dict": model_state_dict,
+                "optimizer_state_dict": state.trainer.optimizer.state_dict(),
+                "step": state.step,
+                "config": state.config.model_dump(),
+            },
+            buf,
+        )
+        return Response(content=buf.getvalue(), media_type="application/octet-stream")
+    except Exception as e:
+        logger.exception("save_state failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/v1/train/load_state")
+def load_state(request: Request):
+    import torch
+
+    if not state.model or not state.trainer:
+        raise HTTPException(status_code=400, detail="Call /v1/train/init first")
+    try:
+        body = request.body()
+        if not body:
+            raise HTTPException(status_code=400, detail="Empty state body")
+        payload = io.BytesIO(body)
+        checkpoint = torch.load(payload, weights_only=False, map_location="cpu")
+        if isinstance(state.model, PeftModel):
+            from peft import set_peft_model_state_dict
+
+            set_peft_model_state_dict(state.model, checkpoint["model_state_dict"])
+        else:
+            state.model.load_state_dict(checkpoint["model_state_dict"])
+        state.trainer.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        state.step = checkpoint.get("step", state.step)
+        return {"status": "loaded"}
+    except Exception as e:
+        logger.exception("load_state failed")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/eval_held_out")
@@ -870,6 +1017,192 @@ def get_status():
         "tokens_processed": state.tokens_processed,
         "elapsed_seconds": round(elapsed, 1),
     }
+
+
+# ---------------------------------------------------------------------------
+# DeMo (Decoupled Momentum) sync helpers
+# ---------------------------------------------------------------------------
+
+
+def _dct_1d(x: "torch.Tensor") -> "torch.Tensor":
+    """Type-II DCT of a 1-D tensor (naive implementation; fine for tiny models)."""
+    import torch
+    N = x.numel()
+    if N == 0:
+        return x.clone()
+    n = torch.arange(N, dtype=x.dtype, device=x.device)
+    k = torch.arange(N, dtype=x.dtype, device=x.device).unsqueeze(1)
+    scale = torch.ones(N, dtype=x.dtype, device=x.device)
+    scale[0] = 1.0 / (2.0 ** 0.5)
+    cos = torch.cos(math.pi * k * (2.0 * n + 1.0) / (2.0 * N))
+    return (2.0 / N) ** 0.5 * scale * (x.unsqueeze(0) @ cos.T).squeeze(0)
+
+
+def _idct_1d(x: "torch.Tensor") -> "torch.Tensor":
+    """Type-III inverse DCT of a 1-D tensor."""
+    import torch
+    N = x.numel()
+    if N == 0:
+        return x.clone()
+    k = torch.arange(N, dtype=x.dtype, device=x.device)
+    n = torch.arange(N, dtype=x.dtype, device=x.device).unsqueeze(1)
+    scale = torch.ones(N, dtype=x.dtype, device=x.device)
+    scale[0] = 1.0 / (2.0 ** 0.5)
+    cos = torch.cos(math.pi * k * (2.0 * n + 1.0) / (2.0 * N))
+    return (2.0 / N) ** 0.5 * (scale * x).unsqueeze(0) @ cos
+
+
+def _topk_sparsify_flat(delta: "torch.Tensor", ratio: float) -> tuple[list[int], list[float]]:
+    """Return the top-k largest-by-magnitude flattened indices and values."""
+    import torch
+    flat = delta.detach().cpu().flatten().to(torch.float32)
+    k = max(1, int(round(flat.numel() * ratio)))
+    k = min(k, flat.numel())
+    if k == 0:
+        return [], []
+    abs_flat = flat.abs()
+    _, indices = torch.topk(abs_flat, k)
+    indices = indices.tolist()
+    values = flat[indices].tolist()
+    return indices, values
+
+
+def _decompress_flat(indices: list[int], values: list[float], shape: list[int]) -> "torch.Tensor":
+    """Reconstruct a dense tensor from a flattened sparse update."""
+    import torch
+    size = int(torch.prod(torch.tensor(shape)).item())
+    dense = torch.zeros(size, dtype=torch.float32)
+    if indices:
+        dense[indices] = torch.tensor(values, dtype=torch.float32)
+    return dense.reshape(shape)
+
+
+def _get_exp_avg_state() -> dict:
+    """Return a copy of the optimizer's live first-moment (exp_avg) state per param."""
+    if not state.trainer or not state.trainer.optimizer:
+        return {}
+    opt_state = state.trainer.optimizer.state
+    return {
+        pid: opt_state[pid]["exp_avg"].detach().clone()
+        for pid in opt_state
+        if isinstance(opt_state[pid], dict) and "exp_avg" in opt_state[pid]
+    }
+
+
+def _compress_demo_updates(
+    baseline: dict, current: dict, ratio: float, step: int, peer_id: str
+) -> list[SparseUpdate]:
+    """Compute compressed momentum deltas relative to a baseline."""
+    updates = []
+    for pid in list(current.keys()):
+        if pid not in baseline:
+            continue
+        base = baseline[pid]
+        cur = current[pid]
+        if base.shape != cur.shape:
+            if base.numel() != cur.numel():
+                logger.warning(
+                    f"Skipping DeMo update for param {pid}: shape mismatch "
+                    f"{tuple(base.shape)} vs {tuple(cur.shape)}"
+                )
+                continue
+            base = base.reshape(cur.shape)
+        delta = cur - base
+        indices, values = _topk_sparsify_flat(delta, ratio)
+        if not indices:
+            continue
+        shape = list(cur.shape)
+        updates.append(
+            SparseUpdate(
+                indices=indices,
+                values=values,
+                shape=shape,
+                step=step,
+                peer_id=peer_id,
+            )
+        )
+    return updates
+
+
+def _apply_demo_updates(peer_updates: list[list[SparseUpdate]], ratio: float) -> None:
+    """Aggregate peer compressed momentum updates and apply them to the optimizer."""
+    import torch
+    if not state.trainer or not state.trainer.optimizer:
+        raise RuntimeError("Trainer not initialized")
+
+    opt = state.trainer.optimizer
+    opt_state = opt.state
+    param_ids = [
+        pid for pid in opt_state
+        if isinstance(opt_state[pid], dict) and "exp_avg" in opt_state[pid]
+    ]
+
+    # peer_updates is a list of update sets, one per peer. Each update set is a
+    # list aligned with param_ids.
+    for idx, pid in enumerate(param_ids):
+        deltas = []
+        for updates in peer_updates:
+            if idx >= len(updates):
+                continue
+            u = updates[idx]
+            dense = _decompress_flat(u.indices, u.values, u.shape).to(
+                opt_state[pid]["exp_avg"].device
+            )
+            if dense.shape != opt_state[pid]["exp_avg"].shape:
+                dense = dense.reshape(opt_state[pid]["exp_avg"].shape)
+            deltas.append(dense)
+        if not deltas:
+            continue
+        avg_delta = torch.stack(deltas).mean(dim=0)
+        opt_state[pid]["exp_avg"] = opt_state[pid]["exp_avg"] + avg_delta.to(
+            opt_state[pid]["exp_avg"].device
+        )
+
+    # Reset the baseline to the post-sync momentum so the next delta is computed
+    # against the freshly synchronized state.
+    state.demo_baseline = _get_exp_avg_state()
+
+
+@app.post("/v1/train/demo_step")
+def demo_step(req: DemoStepRequest):
+    if not state.trainer or not state.config:
+        raise HTTPException(status_code=400, detail="Call /v1/train/init first")
+
+    # Snapshot the current momentum before the local training burst.
+    if state.demo_baseline is None:
+        state.demo_baseline = _get_exp_avg_state()
+
+    try:
+        result = state.train_steps(req.num_steps, return_norms=False)
+        current = _get_exp_avg_state()
+        updates = _compress_demo_updates(
+            state.demo_baseline,
+            current,
+            state.config.demo_top_k_ratio,
+            state.step,
+            "",  # peer_id filled in by the broadcasting layer
+        )
+        return DemoStepResponse(
+            updates=updates,
+            loss=result["loss"],
+            steps_completed=result["steps_completed"],
+            total_steps=result["total_steps"],
+        )
+    except Exception as e:
+        logger.exception("DeMo step failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/v1/train/demo_apply_sync")
+def demo_apply_sync(req: DemoApplySyncRequest):
+    if not state.trainer or not state.config:
+        raise HTTPException(status_code=400, detail="Call /v1/train/init first")
+    try:
+        _apply_demo_updates(req.peer_updates, state.config.demo_top_k_ratio)
+        return {"status": "applied"}
+    except Exception as e:
+        logger.exception("DeMo apply sync failed")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":

@@ -89,12 +89,18 @@ struct CreateJobRequest {
     total_epochs: u32,
     #[serde(default = "default_sync_interval")]
     sync_interval_steps: u64,
+    #[serde(default = "default_max_steps")]
+    max_steps: u64,
     /// Optional webhook URL for job status notifications.
     webhook_url: Option<String>,
 }
 
 fn default_sync_interval() -> u64 {
     500
+}
+
+fn default_max_steps() -> u64 {
+    0
 }
 
 #[derive(Debug, Serialize)]
@@ -162,6 +168,7 @@ async fn create_job(
             &req.method,
             req.total_epochs,
             req.sync_interval_steps,
+            req.max_steps,
         )
         .await
     {
@@ -328,10 +335,7 @@ async fn get_checkpoint(
     }
 }
 
-async fn sse_handler(
-    State(state): State<AppState>,
-    Path(job_id): Path<String>,
-) -> Response {
+async fn sse_handler(State(state): State<AppState>, Path(job_id): Path<String>) -> Response {
     let backend = backend_from(&state);
     let Some(rx) = backend.notifier.subscribe(&job_id).await else {
         return (StatusCode::NOT_FOUND, "job not found or not notifiable").into_response();

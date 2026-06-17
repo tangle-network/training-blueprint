@@ -32,7 +32,11 @@ pub struct Checkpoint {
 
 /// Base directory for checkpoints.
 fn checkpoint_dir() -> PathBuf {
-    PathBuf::from("data/checkpoints")
+    if let Ok(dir) = blueprint_sdk::std::env::var("TRAIN_OP_CHECKPOINT_DIR") {
+        PathBuf::from(dir)
+    } else {
+        PathBuf::from("data/checkpoints")
+    }
 }
 
 /// Path for a specific checkpoint file.

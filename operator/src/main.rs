@@ -9,12 +9,10 @@ use blueprint_sdk::tangle::{TangleConsumer, TangleProducer};
 
 use blueprint_crypto::k256::K256Ecdsa;
 use blueprint_crypto::KeyType;
-use blueprint_networking::service::{
-    AllowedKeys, NetworkCommandMessage, NetworkConfig as NetConfig,
-};
+use blueprint_networking::service::{AllowedKeys, NetworkConfig as NetConfig};
 
 use distributed_training::config::OperatorConfig;
-use distributed_training::network::{self, TrainingNetwork, COORDINATION_TOPIC, MOMENTUM_TOPIC};
+
 use distributed_training::TrainingServer;
 
 fn setup_log() {
@@ -120,31 +118,13 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
         .map(|a| a.to_string())
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
-    let mut handle = net_service.start();
-
-    // Subscribe to training gossip topics
-    let _ = handle.send_network_message(NetworkCommandMessage::SubscribeToTopic(
-        MOMENTUM_TOPIC.to_string(),
-    ));
-    let _ = handle.send_network_message(NetworkCommandMessage::SubscribeToTopic(
-        COORDINATION_TOPIC.to_string(),
-    ));
+    let handle = net_service.start();
 
     tracing::info!(peer_id = %peer_id, "libp2p networking started");
 
-    // Create training network with real peer ID
-    let training_network = Arc::new(TrainingNetwork::new(&config.network, peer_id));
-
-    // Spawn gossip event loop — routes incoming messages to TrainingNetwork
-    let net_clone = training_network.clone();
-    tokio::spawn(async move {
-        network::run_gossip_event_loop(move || handle.next_protocol_message(), net_clone).await;
-    });
-
     tracing::info!(
-        "gossip event loop started on topics: {}, {}",
-        MOMENTUM_TOPIC,
-        COORDINATION_TOPIC
+        protocol = %handle.blueprint_protocol_name,
+        "network handle ready on blueprint protocol topic"
     );
 
     // --- Tangle protocol setup ---
@@ -183,6 +163,7 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
 
     let training_server = TrainingServer {
         config: config.clone(),
+        network: handle,
     };
 
     BlueprintRunner::builder(TangleConfig::default(), env)

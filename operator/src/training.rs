@@ -1,43 +1,33 @@
 //! Training backend interface — abstracts the local training engine.
 //!
-//! Operators can use any training framework (axolotl, unsloth, torchtune) as long
-//! as it exposes an HTTP API matching the TrainingBackend trait. The backend runs
-//! as a separate process (typically a Python server) and communicates via HTTP.
+//! Operators can use any training framework (unsloth, TRL, torchtune) as long
+//! as it exposes the HTTP API implemented by `training-adapter/main.py`.
+//! The backend runs as a separate process and communicates via HTTP.
 
 use blueprint_sdk::std::time::Duration;
 
-use ndarray::Array2;
 use serde::{Deserialize, Serialize};
 
 use crate::config::TrainingConfig;
+use crate::demo::SparseUpdate;
 use crate::eval_gate::HeldOutLosses;
 
-/// Result returned when a training job completes.
-pub struct TrainingResult {
-    pub checkpoint_hash: [u8; 32],
+/// Result returned by a training-step batch.
+#[derive(Debug, Clone, Copy)]
+pub struct TrainStepResult {
+    pub steps_completed: u64,
     pub total_steps: u64,
-    pub final_epoch: u32,
+    pub loss: f32,
 }
 
-// Training backend interface.
-//
-// Any local training engine must support these operations:
-// - init_model(base_model) — initialize or load a base model
-// - train_step(batch_index) -> gradients — execute one training step
-// - get_momentum() -> tensors — get current momentum buffers for DeMo sync
-// - apply_momentum_update(update) — apply a DeMo aggregated momentum update
-// - save_state() -> bytes — serialize model + optimizer state
-// - load_state(checkpoint) — restore from checkpoint
-
-/// Local training backend that calls a Python training server over HTTP.
+/// Local training backend that calls the Python training server over HTTP.
 ///
-/// The Python server (axolotl, unsloth, torchtune) exposes endpoints:
-/// - POST /init   { "model": "..." }
-/// - POST /step   { "batch_index": N } -> { "gradients": [...] }
-/// - GET  /momentum -> { "momentum": [...] }
-/// - POST /apply_momentum { "update": [...] }
-/// - POST /save_state -> bytes
-/// - POST /load_state { "checkpoint": base64 }
+/// Python adapter endpoints:
+/// - `POST /v1/train/init` — load model + dataset + hyperparameters
+/// - `POST /v1/train/step` — run N steps and return loss
+/// - `POST /v1/train/save_state` — return raw torch-serialized state bytes
+/// - `POST /v1/train/load_state` — restore from raw state bytes
+/// - `POST /eval_held_out` — per-example held-out losses for base vs candidate
 pub struct LocalTrainingBackend {
     endpoint: String,
     client: reqwest::Client,
@@ -56,11 +46,48 @@ impl LocalTrainingBackend {
         }
     }
 
-    pub async fn init_model(&self, base_model: &str) -> anyhow::Result<()> {
+    pub async fn init_model(
+        &self,
+        base_model: &str,
+        method: &str,
+        dataset_url: &str,
+        total_epochs: u32,
+        max_steps: u64,
+        sync_interval_steps: u64,
+        shard: Option<(u64, u64)>,
+        cfg: &TrainingConfig,
+    ) -> anyhow::Result<()> {
+        let mut body = serde_json::json!({
+            "base_model": base_model,
+            "method": method,
+            "dataset_url": dataset_url,
+            "dataset_format": cfg.dataset_format,
+            "max_seq_length": cfg.max_seq_length,
+            "lora_r": cfg.lora_r,
+            "lora_alpha": cfg.lora_alpha,
+            "lora_dropout": cfg.lora_dropout,
+            "lora_target_modules": cfg.lora_target_modules,
+            "learning_rate": cfg.learning_rate,
+            "batch_size": cfg.batch_size,
+            "gradient_accumulation_steps": cfg.gradient_accumulation_steps,
+            "num_epochs": total_epochs,
+            "max_steps": max_steps,
+            "warmup_steps": cfg.warmup_steps,
+            "lr_scheduler": cfg.lr_scheduler,
+            "weight_decay": cfg.weight_decay,
+            "load_in_4bit": cfg.load_in_4bit,
+            "sync_interval_steps": sync_interval_steps,
+            "demo_top_k_ratio": cfg.demo_top_k_ratio,
+        });
+        if let Some((start, end)) = shard {
+            body["shard_start"] = start.into();
+            body["shard_end"] = end.into();
+        }
+
         let resp = self
             .client
-            .post(format!("{}/init", self.endpoint))
-            .json(&serde_json::json!({ "model": base_model }))
+            .post(format!("{}/v1/train/init", self.endpoint))
+            .json(&body)
             .send()
             .await?;
 
@@ -72,85 +99,31 @@ impl LocalTrainingBackend {
         Ok(())
     }
 
-    pub async fn train_step(&self, batch_index: u64) -> anyhow::Result<Vec<Array2<f32>>> {
+    pub async fn train_steps(&self, num_steps: u64) -> anyhow::Result<TrainStepResult> {
         let resp = self
             .client
-            .post(format!("{}/step", self.endpoint))
-            .json(&serde_json::json!({ "batch_index": batch_index }))
+            .post(format!("{}/v1/train/step", self.endpoint))
+            .json(&serde_json::json!({ "num_steps": num_steps }))
             .send()
             .await?;
 
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("train_step failed: {body}");
+            anyhow::bail!("train_steps failed: {body}");
         }
 
         let body: StepResponse = resp.json().await?;
-        // Convert flat gradient arrays to Array2
-        let gradients = body
-            .gradients
-            .into_iter()
-            .map(|g| {
-                let rows = g.shape.0;
-                let cols = g.shape.1;
-                Array2::from_shape_vec((rows, cols), g.data)
-                    .unwrap_or_else(|_| Array2::zeros((rows, cols)))
-            })
-            .collect();
-
-        Ok(gradients)
-    }
-
-    pub async fn get_momentum(&self) -> anyhow::Result<Vec<Array2<f32>>> {
-        let resp = self
-            .client
-            .get(format!("{}/momentum", self.endpoint))
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("get_momentum failed: {body}");
-        }
-
-        let body: MomentumResponse = resp.json().await?;
-        let momentum = body
-            .momentum
-            .into_iter()
-            .map(|m| {
-                Array2::from_shape_vec((m.shape.0, m.shape.1), m.data)
-                    .unwrap_or_else(|_| Array2::zeros((m.shape.0, m.shape.1)))
-            })
-            .collect();
-
-        Ok(momentum)
-    }
-
-    pub async fn apply_momentum_update(&self, update: &Array2<f32>) -> anyhow::Result<()> {
-        let flat: Vec<f32> = update.iter().copied().collect();
-        let shape = (update.shape()[0], update.shape()[1]);
-
-        let resp = self
-            .client
-            .post(format!("{}/apply_momentum", self.endpoint))
-            .json(&serde_json::json!({
-                "update": { "data": flat, "shape": [shape.0, shape.1] }
-            }))
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("apply_momentum_update failed: {body}");
-        }
-
-        Ok(())
+        Ok(TrainStepResult {
+            steps_completed: body.steps_completed,
+            total_steps: body.total_steps,
+            loss: body.loss as f32,
+        })
     }
 
     pub async fn save_state(&self) -> anyhow::Result<Vec<u8>> {
         let resp = self
             .client
-            .post(format!("{}/save_state", self.endpoint))
+            .post(format!("{}/v1/train/save_state", self.endpoint))
             .send()
             .await?;
 
@@ -162,13 +135,63 @@ impl LocalTrainingBackend {
         Ok(resp.bytes().await?.to_vec())
     }
 
+    pub async fn load_state(&self, checkpoint: &[u8]) -> anyhow::Result<()> {
+        let resp = self
+            .client
+            .post(format!("{}/v1/train/load_state", self.endpoint))
+            .body(checkpoint.to_vec())
+            .header("content-type", "application/octet-stream")
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("load_state failed: {body}");
+        }
+
+        Ok(())
+    }
+
+    /// Run a local training burst and produce a compressed DeMo momentum update
+    /// relative to the baseline established at the previous sync round.
+    pub async fn demo_step(&self, num_steps: u64) -> anyhow::Result<(Vec<SparseUpdate>, f32)> {
+        let resp = self
+            .client
+            .post(format!("{}/v1/train/demo_step", self.endpoint))
+            .json(&serde_json::json!({ "num_steps": num_steps }))
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("demo_step failed: {body}");
+        }
+
+        let body: DemoStepResponse = resp.json().await?;
+        Ok((body.updates, body.loss as f32))
+    }
+
+    /// Apply aggregated peer DeMo momentum updates to the local optimizer.
+    pub async fn demo_apply_sync(&self, peer_updates: &[Vec<SparseUpdate>]) -> anyhow::Result<()> {
+        let resp = self
+            .client
+            .post(format!("{}/v1/train/demo_apply_sync", self.endpoint))
+            .json(&serde_json::json!({ "peer_updates": peer_updates }))
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("demo_apply_sync failed: {body}");
+        }
+
+        Ok(())
+    }
+
     /// Score the base model and the current (candidate) checkpoint on the private
     /// held-out validation split, returning per-example losses for both. The
     /// protocol's eval gate consumes these to certify that the candidate actually
     /// improved on data no operator trained on.
-    ///
-    /// POST /eval_held_out { "base_model": "..." } ->
-    ///   { "base": [f64, ...], "candidate": [f64, ...] }
     pub async fn held_out_losses(&self, base_model: &str) -> anyhow::Result<HeldOutLosses> {
         let resp = self
             .client
@@ -185,134 +208,6 @@ impl LocalTrainingBackend {
         let body: HeldOutLossResponse = resp.json().await?;
         Ok(HeldOutLosses::new(body.base, body.candidate))
     }
-
-    pub async fn load_state(&self, checkpoint: &[u8]) -> anyhow::Result<()> {
-        let resp = self
-            .client
-            .post(format!("{}/load_state", self.endpoint))
-            .body(checkpoint.to_vec())
-            .header("content-type", "application/octet-stream")
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("load_state failed: {body}");
-        }
-
-        Ok(())
-    }
-}
-
-/// Remote API training backend — calls a cloud training service.
-pub struct ApiTrainingBackend {
-    endpoint: String,
-    api_key: String,
-    client: reqwest::Client,
-}
-
-impl ApiTrainingBackend {
-    pub fn new(endpoint: &str, api_key: &str) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(600))
-            .build()
-            .expect("failed to build HTTP client");
-
-        Self {
-            endpoint: endpoint.trim_end_matches('/').to_string(),
-            api_key: api_key.to_string(),
-            client,
-        }
-    }
-
-    pub async fn init_model(&self, base_model: &str) -> anyhow::Result<()> {
-        let resp = self
-            .client
-            .post(format!("{}/init", self.endpoint))
-            .bearer_auth(&self.api_key)
-            .json(&serde_json::json!({ "model": base_model }))
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("API init_model failed: {body}");
-        }
-
-        Ok(())
-    }
-
-    pub async fn train_step(&self, batch_index: u64) -> anyhow::Result<Vec<Array2<f32>>> {
-        let resp = self
-            .client
-            .post(format!("{}/step", self.endpoint))
-            .bearer_auth(&self.api_key)
-            .json(&serde_json::json!({ "batch_index": batch_index }))
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("API train_step failed: {body}");
-        }
-
-        let body: StepResponse = resp.json().await?;
-        let gradients = body
-            .gradients
-            .into_iter()
-            .map(|g| {
-                Array2::from_shape_vec((g.shape.0, g.shape.1), g.data)
-                    .unwrap_or_else(|_| Array2::zeros((g.shape.0, g.shape.1)))
-            })
-            .collect();
-
-        Ok(gradients)
-    }
-
-    pub async fn apply_momentum_update(&self, update: &Array2<f32>) -> anyhow::Result<()> {
-        let flat: Vec<f32> = update.iter().copied().collect();
-        let shape = (update.shape()[0], update.shape()[1]);
-
-        let resp = self
-            .client
-            .post(format!("{}/apply_momentum", self.endpoint))
-            .bearer_auth(&self.api_key)
-            .json(&serde_json::json!({
-                "update": { "data": flat, "shape": [shape.0, shape.1] }
-            }))
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("API apply_momentum failed: {body}");
-        }
-
-        Ok(())
-    }
-
-    pub async fn save_state(&self) -> anyhow::Result<Vec<u8>> {
-        let resp = self
-            .client
-            .post(format!("{}/save_state", self.endpoint))
-            .bearer_auth(&self.api_key)
-            .send()
-            .await?;
-
-        Ok(resp.bytes().await?.to_vec())
-    }
-
-    pub async fn load_state(&self, checkpoint: &[u8]) -> anyhow::Result<()> {
-        self.client
-            .post(format!("{}/load_state", self.endpoint))
-            .bearer_auth(&self.api_key)
-            .body(checkpoint.to_vec())
-            .header("content-type", "application/octet-stream")
-            .send()
-            .await?;
-
-        Ok(())
-    }
 }
 
 /// Create a training backend from config.
@@ -323,20 +218,20 @@ pub fn create_backend(config: &TrainingConfig) -> anyhow::Result<LocalTrainingBa
 // --- Wire types for training backend HTTP API ---
 
 #[derive(Debug, Serialize, Deserialize)]
-struct TensorPayload {
-    data: Vec<f32>,
-    shape: (usize, usize),
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 struct StepResponse {
-    gradients: Vec<TensorPayload>,
-    loss: f32,
+    steps_completed: u64,
+    total_steps: u64,
+    loss: f64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct MomentumResponse {
-    momentum: Vec<TensorPayload>,
+struct DemoStepResponse {
+    updates: Vec<SparseUpdate>,
+    loss: f64,
+    #[allow(dead_code)]
+    steps_completed: u64,
+    #[allow(dead_code)]
+    total_steps: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
