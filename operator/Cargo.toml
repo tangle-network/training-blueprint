@@ -20,7 +20,7 @@ path = "src/bin/http-only.rs"
 blueprint-sdk = { workspace = true, features = ["tee"] }
 blueprint-networking = { workspace = true }
 
-tangle-inference-core = { git = "https://github.com/tangle-network/tangle-inference-core", branch = "master" }
+tangle-inference-core = { git = "https://github.com/tangle-network/tangle-inference-core", rev = "c7e11063a2ba30c662c64356a73bd81d4a03a267", default-features = false, features = ["billing", "http", "metrics"] }
 alloy = { workspace = true }
 alloy-sol-types = { workspace = true }
 tokio = { workspace = true }
@@ -51,15 +51,15 @@ blueprint-crypto = { workspace = true }
 libp2p = { version = "0.54", features = ["identify"] }
 crossbeam-channel = "0.5"
 rand = "0.8"
-blueprint-webhooks = { version = "0.2.0-alpha.9", features = ["notifier"] }
+blueprint-webhooks = { git = "https://github.com/tangle-network/blueprint", rev = "54f06f2e8cc697435c862f9e24fcefe45aab3324", package = "blueprint-webhooks", features = ["notifier"] }
 tokio-stream = "0.1"
 futures = "0.3"
 
 [dev-dependencies]
-blueprint-sdk = { version = "0.2.0-alpha.9", features = ["testing", "tangle"] }
-blueprint-networking = { git = "https://github.com/tangle-network/blueprint", branch = "main" }
-blueprint-crypto = { git = "https://github.com/tangle-network/blueprint", branch = "main" }
-blueprint-anvil-testing-utils = "0.2.0-alpha.9"
+blueprint-sdk = { git = "https://github.com/tangle-network/blueprint", rev = "54f06f2e8cc697435c862f9e24fcefe45aab3324", package = "blueprint-sdk", features = ["testing", "tangle"] }
+blueprint-networking = { git = "https://github.com/tangle-network/blueprint", rev = "54f06f2e8cc697435c862f9e24fcefe45aab3324", package = "blueprint-networking" }
+blueprint-crypto = { git = "https://github.com/tangle-network/blueprint", rev = "54f06f2e8cc697435c862f9e24fcefe45aab3324", package = "blueprint-crypto" }
+blueprint-anvil-testing-utils = { git = "https://github.com/tangle-network/blueprint", rev = "54f06f2e8cc697435c862f9e24fcefe45aab3324", package = "blueprint-anvil-testing-utils" }
 alloy-primitives = "1"
 alloy-sol-types = "1"
 tempfile = "3"
