@@ -51,15 +51,15 @@ blueprint-crypto = { workspace = true }
 libp2p = { version = "0.54", features = ["identify"] }
 crossbeam-channel = "0.5"
 rand = "0.8"
-blueprint-webhooks = { git = "https://github.com/tangle-network/blueprint", rev = "edf64b4f60df4f51fd27ce39ea754bcbc0b3fd54", package = "blueprint-webhooks", features = ["notifier"] }
+blueprint-webhooks = { git = "https://github.com/tangle-network/blueprint", rev = "be8bd303260d3b1e1df6624eeac92b3ce1f40c38", package = "blueprint-webhooks", features = ["notifier"] }
 tokio-stream = "0.1"
 futures = "0.3"
 
 [dev-dependencies]
-blueprint-sdk = { git = "https://github.com/tangle-network/blueprint", rev = "edf64b4f60df4f51fd27ce39ea754bcbc0b3fd54", package = "blueprint-sdk", features = ["testing", "tangle"] }
-blueprint-networking = { git = "https://github.com/tangle-network/blueprint", rev = "edf64b4f60df4f51fd27ce39ea754bcbc0b3fd54", package = "blueprint-networking" }
-blueprint-crypto = { git = "https://github.com/tangle-network/blueprint", rev = "edf64b4f60df4f51fd27ce39ea754bcbc0b3fd54", package = "blueprint-crypto" }
-blueprint-anvil-testing-utils = { git = "https://github.com/tangle-network/blueprint", rev = "edf64b4f60df4f51fd27ce39ea754bcbc0b3fd54", package = "blueprint-anvil-testing-utils" }
+blueprint-sdk = { git = "https://github.com/tangle-network/blueprint", rev = "be8bd303260d3b1e1df6624eeac92b3ce1f40c38", package = "blueprint-sdk", features = ["testing", "tangle"] }
+blueprint-networking = { git = "https://github.com/tangle-network/blueprint", rev = "be8bd303260d3b1e1df6624eeac92b3ce1f40c38", package = "blueprint-networking" }
+blueprint-crypto = { git = "https://github.com/tangle-network/blueprint", rev = "be8bd303260d3b1e1df6624eeac92b3ce1f40c38", package = "blueprint-crypto" }
+blueprint-anvil-testing-utils = { git = "https://github.com/tangle-network/blueprint", rev = "be8bd303260d3b1e1df6624eeac92b3ce1f40c38", package = "blueprint-anvil-testing-utils" }
 alloy-primitives = "1"
 alloy-sol-types = "1"
 tempfile = "3"
