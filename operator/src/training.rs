@@ -46,6 +46,10 @@ impl LocalTrainingBackend {
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The public adapter accepts the training protocol fields without an extra wrapper type."
+    )]
     pub async fn init_model(
         &self,
         base_model: &str,

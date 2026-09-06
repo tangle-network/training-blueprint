@@ -54,6 +54,10 @@ fn dummy_billing_config() -> BillingConfig {
 }
 
 #[tokio::main]
+#[expect(
+    clippy::result_large_err,
+    reason = "This process entrypoint returns the SDK error once at shutdown; boxing adds no useful boundary."
+)]
 async fn main() -> Result<(), blueprint_sdk::Error> {
     setup_log();
 
