@@ -154,6 +154,10 @@ impl TrainingCoordinator {
     }
 
     /// Start or join a distributed training job.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The public job entrypoint preserves the independent chain and HTTP request fields."
+    )]
     pub async fn start_or_join_job(
         &self,
         job_id: u64,
@@ -472,15 +476,14 @@ impl TrainingCoordinator {
             let job = jobs
                 .get(&job_id)
                 .ok_or_else(|| anyhow::anyhow!("job not found"))?;
-            let res = (
+            (
                 job.total_epochs,
                 job.base_model.clone(),
                 job.method.clone(),
                 job.dataset_url.clone(),
                 job.max_steps,
                 job.operators.len().saturating_sub(1),
-            );
-            res
+            )
         };
 
         // Initialize training backend with the real Python adapter.
